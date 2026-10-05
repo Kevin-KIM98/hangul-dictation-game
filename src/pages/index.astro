@@ -1,0 +1,372 @@
+---
+---
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#4dabf7" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <title>받아쓰기 풍선 사격</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Jua&display=swap" rel="stylesheet" />
+  </head>
+  <body data-state="menu">
+    <canvas id="stage"></canvas>
+
+    <div id="hud">
+      <div class="chip left">
+        <span id="qnum">1 / 10</span>
+        <span id="hearts"></span>
+      </div>
+      <div class="chip right">
+        <span id="combo"></span>
+        <span class="score">⭐ <b id="score">0</b></span>
+        <span class="score">🪙 <b id="coins">0</b></span>
+      </div>
+      <div id="board" aria-live="polite"></div>
+      <div id="timer" hidden><div id="timer-bar"></div></div>
+      <p id="hint" hidden>💡 반짝이는 풍선을 쏴요!</p>
+      <div id="crosshair"></div>
+      <div class="controls">
+        <button id="replay" type="button" aria-label="문제 다시 듣기">🔊 <span>다시 듣기</span></button>
+        <button id="pause" type="button" aria-label="잠깐 멈춤">⏸</button>
+      </div>
+    </div>
+
+    <div id="lap" class="banner">
+      <p id="lap-title"></p>
+      <p id="lap-sub"></p>
+      <p id="lap-desc"></p>
+    </div>
+
+    <div id="clear" class="banner">
+      <p id="clear-stars"></p>
+      <p id="clear-text"></p>
+      <p id="clear-sticker"></p>
+    </div>
+
+    <section id="menu" class="overlay">
+      <div class="card">
+        <p class="eyebrow">듣고 · 찾고 · 쏘고</p>
+        <h1>받아쓰기 <br />풍선 사격</h1>
+        <button id="start" class="big" type="button">게임 시작</button>
+        <p id="qstatus" class="status"></p>
+        <p id="record" class="record"></p>
+        <button id="shop-open" class="ghost strong" type="button">🛍️ 꾸미기 상점</button>
+        <ul class="howto">
+          <li>🔊 문제를 잘 들어요</li>
+          <li class="fine">🎯 마우스로 겨누고 클릭해서 글자를 순서대로 쏴요</li>
+          <li class="coarse">👆 글자 풍선을 순서대로 톡톡 눌러요</li>
+          <li class="fine">⌨️ R 다시 듣기 · Esc 멈춤</li>
+        </ul>
+        <div class="upload">
+          <label class="ghost" for="photo">📷 사진으로 올리기</label>
+          <input id="photo" type="file" accept="image/*" hidden />
+          <button id="write" class="ghost" type="button">✏️ 직접 쓰기</button>
+          <label class="ghost" for="file">📂 파일</label>
+          <input id="file" type="file" accept=".txt,.json,text/plain,application/json" hidden />
+          <button id="reset" class="ghost" type="button" hidden>기본 문제로</button>
+        </div>
+        <p class="note">받아쓰기 급수표를 찍어 올리거나, 한 줄에 한 문제씩 적어요</p>
+      </div>
+    </section>
+
+    <section id="editor" class="overlay">
+      <div class="card wide">
+        <h2>문제 만들기</h2>
+        <div id="ed-photo">
+          <canvas id="ed-canvas"></canvas>
+          <div class="upload">
+            <button id="ed-rotate" class="ghost" type="button">↻ 돌리기</button>
+            <button id="ed-scan" class="ghost strong" type="button">🔍 글자 읽기</button>
+          </div>
+        </div>
+        <p id="ed-status" class="status"></p>
+        <textarea id="ed-text" rows="10" spellcheck="false" placeholder="한 줄에 한 문제씩 적어요"></textarea>
+        <button id="ed-save" class="big" type="button">저장</button>
+        <button id="ed-cancel" class="ghost" type="button">취소</button>
+      </div>
+    </section>
+
+    <section id="shop" class="overlay">
+      <div class="card wide">
+        <h2>꾸미기 상점</h2>
+        <p id="shop-coins" class="totals"></p>
+        <div id="shop-list"></div>
+        <button id="shop-close" class="big" type="button">닫기</button>
+      </div>
+    </section>
+
+    <section id="paused" class="overlay">
+      <div class="card small">
+        <h2>잠깐 멈춤</h2>
+        <button id="resume" class="big" type="button">계속하기</button>
+        <button id="quit" class="ghost" type="button">처음으로</button>
+      </div>
+    </section>
+
+    <section id="result" class="overlay">
+      <div class="card">
+        <h2 id="result-title"></h2>
+        <p id="result-score" class="totals"></p>
+        <p id="result-stars" class="status"></p>
+        <ul id="result-coins"></ul>
+        <p id="result-total"></p>
+        <p id="result-stickers"></p>
+        <ol id="result-list"></ol>
+        <button id="again" class="big" type="button">다시 하기</button>
+        <button id="result-shop" class="ghost strong" type="button">🛍️ 상점</button>
+        <button id="home" class="ghost" type="button">처음으로</button>
+      </div>
+    </section>
+
+    <div id="toast" role="status"></div>
+
+    <script>
+      import '../scripts/main.ts';
+    </script>
+
+    <style is:global>
+      :root {
+        --ink: #1d2b53;
+        --cream: #fff8e7;
+        --coral: #ff5d5d;
+        --sun: #ffd23f;
+        --mint: #3ddc97;
+        --sky: #4dabf7;
+        --cell: clamp(30px, 7.2vmin, 58px);
+        --edge: 3px solid var(--ink);
+        --drop: 0 5px 0 var(--ink);
+      }
+      * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+      [hidden] { display: none !important; }
+      html, body { height: 100%; margin: 0; overflow: hidden; overscroll-behavior: none; }
+      body {
+        font-family: 'Jua', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
+        color: var(--ink);
+        background: linear-gradient(#3d9df0 0%, #8fd3ff 48%, #e3f6ff 78%, #bdeeb0 100%);
+        user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+      }
+      #stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+      button, label { font: inherit; color: inherit; cursor: pointer; touch-action: manipulation; }
+
+      /* ── HUD ── */
+      #hud {
+        position: fixed; inset: 0; pointer-events: none; display: none;
+        padding: max(10px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+          max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+      }
+      body:is([data-state='playing'], [data-state='between'], [data-state='paused']) #hud { display: block; }
+      .chip {
+        position: absolute; top: max(10px, env(safe-area-inset-top)); display: flex; gap: 10px; align-items: center;
+        background: var(--cream); border: var(--edge); border-radius: 999px; padding: 4px 14px;
+        font-size: clamp(15px, 3.4vmin, 22px); box-shadow: 0 3px 0 var(--ink);
+      }
+      .chip.left { left: max(12px, env(safe-area-inset-left)); }
+      .chip.right { right: max(12px, env(safe-area-inset-right)); }
+      #hearts { letter-spacing: 1px; display: inline-block; }
+      #hearts.shake { animation: shake 0.4s; }
+      #combo { color: var(--coral); }
+      #combo:empty { display: none; }
+      .score b { font-weight: 400; font-variant-numeric: tabular-nums; }
+
+      #board {
+        margin: calc(clamp(15px, 3.4vmin, 22px) + 30px) auto 0; width: fit-content; max-width: 100%;
+        display: flex; flex-wrap: wrap; justify-content: center; gap: 8px calc(var(--cell) * 0.45);
+        background: rgb(255 248 231 / 0.92); border: var(--edge); border-radius: 18px;
+        padding: 10px 14px; box-shadow: var(--drop);
+      }
+      .word { display: flex; gap: 4px; }
+      .cell {
+        width: var(--cell); height: var(--cell); display: grid; place-items: center;
+        font-size: calc(var(--cell) * 0.7); line-height: 1;
+        background: #fff; border: 2px dashed #9aa5c4; border-radius: 10px;
+      }
+      .cell.auto { width: calc(var(--cell) * 0.4); background: none; border-color: transparent; }
+      .cell.next { border: 3px solid var(--coral); animation: pulse 1s infinite; }
+      .cell.filled:not(.auto) { background: var(--sun); border: 2px solid var(--ink); animation: land 0.3s; }
+      .cell.filled.given:not(.auto) { background: #fff; border: 2px solid #c3cbe0; color: #6b7699; animation: none; }
+      #timer {
+        width: min(70%, 360px); height: 14px; margin: 10px auto 0; overflow: hidden;
+        background: rgb(255 248 231 / 0.9); border: var(--edge); border-radius: 999px;
+      }
+      #timer[hidden] { display: none; }
+      #timer-bar { height: 100%; background: linear-gradient(90deg, var(--coral), var(--sun)); border-radius: 999px; }
+      #lap { z-index: 3; }
+      #lap-title { font-size: clamp(30px, 8vmin, 54px); }
+      #lap-sub { font-size: clamp(16px, 4vmin, 24px); color: var(--coral); margin-top: 4px; }
+      #lap-desc { font-size: clamp(15px, 3.6vmin, 22px); margin-top: 6px; }
+      #result-coins { list-style: none; margin: 8px 0 4px; padding: 8px 12px; text-align: left; background: #fff; border-radius: 12px; font-size: 16px; }
+      #result-coins li { display: flex; justify-content: space-between; gap: 10px; line-height: 1.7; }
+      #result-coins b { font-weight: 400; color: #b0620a; white-space: nowrap; }
+      #result-total { margin: 4px 0 10px; font-size: 20px; color: #b0620a; }
+      #shop-list h3 { margin: 12px 0 6px; font-weight: 400; font-size: 20px; text-align: left; }
+      .shop-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
+      .item {
+        display: grid; gap: 2px; justify-items: center; padding: 8px 4px; font-size: 15px;
+        background: #fff; border: var(--edge); border-radius: 14px; opacity: 0.85;
+      }
+      .item-icon { font-size: 30px; line-height: 1.1; }
+      .item-tag { font-size: 14px; color: #b0620a; }
+      .item.owned { opacity: 1; }
+      .item.owned .item-tag { color: #5a6a92; }
+      .item.on { background: var(--sun); box-shadow: 0 3px 0 var(--ink); }
+      .item.on .item-tag { color: var(--ink); }
+      .item:active { transform: translateY(2px); }
+      #shop .card { margin-bottom: 30vh; }
+      #hint {
+        width: fit-content; margin: 10px auto 0; padding: 4px 14px; border-radius: 999px;
+        background: var(--sun); border: var(--edge); font-size: clamp(14px, 3vmin, 20px);
+      }
+      #hint[hidden] { display: none; }
+
+      #crosshair {
+        position: absolute; left: 50%; top: 50%; width: 34px; height: 34px; margin: -17px;
+        border: 3px solid #fff; border-radius: 50%; box-shadow: 0 0 0 2px var(--ink), inset 0 0 0 2px var(--ink);
+        display: none;
+      }
+      #crosshair::after {
+        content: ''; position: absolute; inset: 11px; background: var(--coral); border-radius: 50%;
+        box-shadow: 0 0 0 2px #fff;
+      }
+      body.locked[data-state='playing'] #crosshair { display: block; }
+
+      .controls {
+        position: absolute; left: max(12px, env(safe-area-inset-left)); bottom: max(14px, env(safe-area-inset-bottom));
+        display: flex; gap: 10px; pointer-events: auto;
+      }
+      .controls button {
+        min-width: 56px; min-height: 56px; padding: 0 18px; font-size: 22px;
+        background: var(--cream); border: var(--edge); border-radius: 18px; box-shadow: var(--drop);
+      }
+      .controls button:active { transform: translateY(4px); box-shadow: 0 1px 0 var(--ink); }
+      #replay { background: var(--sun); }
+
+      /* ── 정답 배너 ── */
+      .banner {
+        position: fixed; left: 50%; top: 50%; translate: -50% -50%; text-align: center; pointer-events: none;
+        background: var(--cream); border: var(--edge); border-radius: 26px; padding: 18px 32px;
+        box-shadow: 0 8px 0 var(--ink); opacity: 0; scale: 0.6; transition: opacity 0.2s, scale 0.3s cubic-bezier(0.3, 1.6, 0.5, 1);
+        max-width: 92vw;
+      }
+      .banner.show { opacity: 1; scale: 1; }
+      .banner p { margin: 0; }
+      #clear-stars { font-size: clamp(34px, 9vmin, 60px); }
+      #clear-text { font-size: clamp(22px, 5.5vmin, 40px); }
+      #clear-sticker { margin-top: 6px; font-size: clamp(18px, 4.4vmin, 28px); color: var(--coral); }
+      .record { margin: 6px 0 0; font-size: 16px; color: #b0620a; }
+      #result-stickers { margin: 0 0 10px; font-size: 30px; letter-spacing: 2px; line-height: 1.3; }
+      #result-stickers:empty { display: none; }
+
+      /* ── 오버레이 ── */
+      .overlay {
+        position: fixed; inset: 0; display: none; overflow-y: auto;
+        padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+        background: rgb(29 43 83 / 0.28);
+      }
+      body[data-state='editor'] #editor, body[data-state='shop'] #shop, body[data-state='menu'] #menu, body[data-state='paused'] #paused, body[data-state='result'] #result { display: grid; }
+      .card {
+        margin: auto; width: min(100%, 440px); text-align: center;
+        background: var(--cream); border: 4px solid var(--ink); border-radius: 30px;
+        padding: 26px 24px 22px; box-shadow: 0 10px 0 var(--ink);
+      }
+      .card.small { width: min(100%, 320px); }
+      .card.wide { width: min(100%, 560px); }
+      #ed-canvas { display: block; max-width: 100%; max-height: 34vh; margin: 0 auto; border: var(--edge); border-radius: 12px; background: #fff; }
+      #ed-text {
+        display: block; width: 100%; margin: 10px 0 14px; padding: 10px 12px; resize: vertical;
+        font: 20px/1.6 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; color: var(--ink);
+        border: var(--edge); border-radius: 14px; background: #fff; user-select: text; -webkit-user-select: text;
+      }
+      .ghost.strong { background: var(--sun); }
+      .ghost:disabled { opacity: 0.5; }
+      .eyebrow { margin: 0; color: var(--coral); font-size: 18px; letter-spacing: 2px; }
+      h1 { margin: 4px 0 18px; font-weight: 400; font-size: clamp(40px, 11vmin, 62px); line-height: 1.05; }
+      h2 { margin: 0 0 12px; font-weight: 400; font-size: clamp(30px, 8vmin, 44px); }
+      .big {
+        display: block; width: 100%; min-height: 64px; font-size: 28px;
+        background: var(--coral); color: #fff; border: 4px solid var(--ink); border-radius: 20px; box-shadow: 0 6px 0 var(--ink);
+      }
+      .big:active { transform: translateY(5px); box-shadow: 0 1px 0 var(--ink); }
+      .ghost {
+        display: inline-block; margin-top: 12px; padding: 10px 18px; min-height: 46px; font-size: 18px;
+        background: #fff; border: var(--edge); border-radius: 14px;
+      }
+      :is(.big, .ghost, .controls button):focus-visible { outline: 4px solid var(--sky); outline-offset: 3px; }
+      .status { margin: 12px 0 0; font-size: 17px; }
+      .howto { list-style: none; margin: 14px 0 4px; padding: 12px 14px; text-align: left; font-size: 17px; line-height: 1.7; background: #fff; border-radius: 16px; }
+      .howto .coarse { display: none; }
+      @media (pointer: coarse) {
+        .howto .coarse { display: list-item; }
+        .howto .fine { display: none; }
+      }
+      .upload { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+      .note { margin: 8px 0 0; font-size: 14px; opacity: 0.7; }
+
+      .totals { margin: 0 0 6px; font-size: 22px; }
+      #result-list { margin: 0 0 16px; padding: 0; list-style: none; text-align: left; max-height: 26vh; overflow-y: auto; }
+      #result-list li {
+        display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; padding: 8px 12px; margin-bottom: 6px;
+        background: #fff; border-radius: 12px; font-size: 18px;
+      }
+      .r-wrong { grid-column: 1 / -1; color: var(--coral); font-size: 15px; }
+
+      /* ── 날아가는 글자 · 알림 ── */
+      .fly {
+        position: fixed; z-index: 5; translate: -50% -50%; pointer-events: none; font-size: 64px; line-height: 1;
+        color: var(--ink); text-shadow: 0 0 0 #fff, 2px 2px 0 #fff, -2px -2px 0 #fff, 2px -2px 0 #fff, -2px 2px 0 #fff;
+        transition: left 0.32s ease-in, top 0.32s ease-in, font-size 0.32s ease-in;
+      }
+      #toast {
+        position: fixed; left: 50%; bottom: max(90px, calc(env(safe-area-inset-bottom) + 90px)); translate: -50% 20px;
+        max-width: 90vw; padding: 10px 18px; font-size: 18px; text-align: center; pointer-events: none;
+        background: var(--ink); color: #fff; border-radius: 16px; opacity: 0; transition: opacity 0.2s, translate 0.2s;
+      }
+      #toast.show { opacity: 1; translate: -50% 0; }
+
+      .pop {
+        position: fixed; z-index: 6; translate: -50% -50%; pointer-events: none; white-space: nowrap;
+        font-size: clamp(22px, 5vmin, 34px); color: var(--sun);
+        -webkit-text-stroke: 6px var(--ink); paint-order: stroke fill;
+        animation: rise 0.95s ease-out forwards;
+      }
+      .pop.oops { color: #fff; }
+      .pop.bonus { color: #fff; font-size: clamp(28px, 7vmin, 46px); -webkit-text-stroke-color: #e8590c; }
+      .pop.praise { color: var(--mint); font-size: clamp(40px, 11vmin, 84px); -webkit-text-stroke-width: 10px; animation-name: cheer; }
+      @keyframes rise { from { opacity: 1; scale: 0.6; } 20% { scale: 1.15; } to { opacity: 0; translate: -50% -170%; } }
+      @keyframes cheer { from { opacity: 0; scale: 0.3; rotate: -8deg; } 25% { opacity: 1; scale: 1.1; rotate: 3deg; } 70% { opacity: 1; scale: 1; } to { opacity: 0; scale: 1.2; } }
+      .marker {
+        position: fixed; z-index: 4; width: 44px; height: 44px; margin: -22px; pointer-events: none;
+        border: 3px solid #fff; border-radius: 50%; box-shadow: 0 0 0 2px rgb(29 43 83 / 0.7);
+        animation: ring 0.3s ease-out forwards;
+      }
+      .marker.hit { border-color: var(--sun); }
+      .marker.hit::before, .marker.hit::after {
+        content: ''; position: absolute; left: 50%; top: 50%; width: 30px; height: 4px; margin: -2px -15px;
+        background: #fff; border-radius: 2px; box-shadow: 0 0 0 1.5px var(--ink); rotate: 45deg;
+      }
+      .marker.hit::after { rotate: -45deg; }
+      @keyframes ring { from { scale: 0.4; opacity: 1; } to { scale: 1.25; opacity: 0; } }
+      @keyframes pulse { 50% { box-shadow: 0 0 0 5px rgb(255 93 93 / 0.3); } }
+      @keyframes land { from { scale: 1.5; } }
+      @keyframes shake { 25% { translate: -5px 0; } 50% { translate: 5px 0; } 75% { translate: -3px 0; } }
+
+      /* 낮은 가로 화면(휴대폰 가로) */
+      @media (max-height: 460px) {
+        .card { padding: 14px 20px; width: min(100%, 620px); }
+        h1 { font-size: 34px; margin-bottom: 8px; }
+        h1 br { display: none; }
+        .howto { margin: 8px 0 0; padding: 6px 12px; font-size: 15px; line-height: 1.4; }
+        .big { min-height: 50px; font-size: 22px; }
+        #replay span { display: none; }
+        #board { padding: 6px 10px; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .cell.next, #hearts.shake { animation: none; }
+      }
+    </style>
+  </body>
+</html>

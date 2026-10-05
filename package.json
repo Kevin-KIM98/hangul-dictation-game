@@ -1,0 +1,22 @@
+{
+  "name": "hangul-dictation-fps",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "test": "node --test tests/logic.test.ts",
+    "deploy": "node scripts/deploy.mjs"
+  },
+  "dependencies": {
+    "astro": "^5.0.0",
+    "tesseract.js": "^7.0.0",
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "@tesseract.js-data/kor": "^1.0.0",
+    "@types/three": "^0.186.0"
+  }
+}
