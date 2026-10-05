@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { compose, decompose, distractorsFor, similar } from '../src/scripts/hangul.ts';
 import { Game, Round } from '../src/scripts/round.ts';
-import { applyQuestionSet, buy, difficulty, equip, finishLap, newSave, reviveSave } from '../src/scripts/campaign.ts';
+import { BOSS_STAGE, STAGES, applyQuestionSet, bossPhase, bossTime, buy, difficulty, equip, finishBoss, finishLap, gradeOf, newSave, reviveSave } from '../src/scripts/campaign.ts';
 
 test('음절 분해·조합', () => {
   assert.deepEqual(decompose('갑'), [0, 0, 17]);
@@ -54,6 +54,14 @@ test('하트 0이면 힌트 모드, 문항은 계속 진행', () => {
   assert.equal(r.stars, 1);
 });
 
+test('시간 초과: 글자 없이 하트만 잃고 콤보가 끊긴다', () => {
+  const g = new Game(['가나']);
+  g.nextQuestion();
+  g.hit('가');
+  g.penalize();
+  assert.deepEqual([g.combo, g.round.hearts, g.round.misses, g.round.wrong], [0, 2, 1, []]);
+});
+
 test('점수·콤보·문항 진행·결과', () => {
   const g = new Game(['가나', '다']);
   assert.ok(g.nextQuestion());
@@ -92,7 +100,7 @@ test('바퀴: 틀리면 같은 단계를 반복하고 끈기 보상이 커진다
   assert.deepEqual([s.stage, s.lap], [0, 2]);
 });
 
-test('바퀴: 하나도 안 틀리면 다음 단계, 끝까지 가면 왕관', () => {
+test('바퀴: 하나도 안 틀리면 다음 단계, 사격을 다 지나면 최종 시험', () => {
   const s = newSave();
   const a = finishLap(s, 0, 100);
   assert.ok(a.perfect && a.advanced);
@@ -100,8 +108,33 @@ test('바퀴: 하나도 안 틀리면 다음 단계, 끝까지 가면 왕관', (
   finishLap(s, 4, 100); // 도전 단계는 틀려도 통과
   assert.equal(s.stage, 2);
   const c = finishLap(s, 2, 100);
-  assert.ok(c.crowned);
-  assert.deepEqual([s.stage, s.crowns, s.totalLaps], [0, 1, 3]);
+  assert.equal(c.crowned, false);
+  assert.equal(s.stage, BOSS_STAGE);
+  assert.equal(STAGES[s.stage].mode, 'boss');
+  assert.deepEqual([s.crowns, s.totalLaps], [0, 3]);
+});
+
+test('최종 시험: 등급·왕관·기록, 끝나면 처음 단계로', () => {
+  const s = newSave();
+  s.stage = BOSS_STAGE;
+  s.lap = 2;
+  const a = finishBoss(s, 0, 300);
+  assert.deepEqual([a.grade, a.perfect, a.newBest], ['S', true, true]);
+  assert.deepEqual([s.stage, s.lap, s.crowns, s.bossBest, s.bossGrade, s.bossClears, s.level], [0, 0, 1, 300, 'S', 1, 3]);
+  assert.ok(a.coins.some((c) => c.label.includes('왕관')));
+  s.stage = BOSS_STAGE;
+  const b = finishBoss(s, 4, 200);
+  assert.deepEqual([b.grade, b.newBest, s.bossBest, s.bossGrade, s.crowns], ['B', false, 300, 'S', 2]);
+  assert.ok(b.total < a.total);
+  assert.deepEqual([gradeOf(1), gradeOf(2), gradeOf(3), gradeOf(9)], ['A', 'A', 'B', 'C']);
+});
+
+test('최종 시험: 보스 체력이 줄면 글자 쓰는 시간이 짧아진다', () => {
+  assert.deepEqual([bossPhase(1), bossPhase(0.5), bossPhase(0.2)], [0, 1, 2]);
+  assert.ok(bossTime(2, 1) > bossTime(2, 0.4));
+  assert.ok(bossTime(2, 0.4) > bossTime(2, 0.1));
+  assert.ok(bossTime(1, 1) > bossTime(5, 1));
+  assert.ok(bossTime(5, 0.01) >= 8);
 });
 
 test('난이도: 많이 틀리면 쉬워진다', () => {

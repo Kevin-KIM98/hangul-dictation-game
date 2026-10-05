@@ -1,6 +1,6 @@
 // 반복 학습 진행(바퀴·단계·난이도), 코인, 상점 — 화면과 무관한 순수 로직
 
-export type Mode = 'full' | 'blank' | 'speed';
+export type Mode = 'full' | 'blank' | 'speed' | 'boss';
 
 export interface StageDef {
   mode: Mode;
@@ -15,7 +15,11 @@ export const STAGES: StageDef[] = [
   { mode: 'full', name: '받아쓰기', emoji: '🎧', desc: '잘 듣고 글자를 순서대로 모두 쏴요', needPerfect: true },
   { mode: 'blank', name: '빈칸 채우기', emoji: '🧩', desc: '빠진 글자만 찾아서 쏴요', needPerfect: false },
   { mode: 'speed', name: '번개 받아쓰기', emoji: '⚡', desc: '시간 안에 끝내면 코인을 더 받아요', needPerfect: false },
+  { mode: 'boss', name: '최종 시험', emoji: '🐉', desc: '글자 도둑 대왕! 글자를 직접 써서 되찾아요', needPerfect: false },
 ];
+
+/** 사격 단계를 모두 지나면 나오는 마지막 단계(손글씨 보스전) */
+export const BOSS_STAGE = STAGES.findIndex((s) => s.mode === 'boss');
 
 export const THEME_COUNT = 5;
 export const MIN_LEVEL = 1;
@@ -70,7 +74,14 @@ export interface Save {
   crowns: number;
   best: number;
   stickers: string[];
+  /** 최종 시험(보스전) 기록 */
+  bossBest: number;
+  bossClears: number;
+  bossGrade: Grade | '';
 }
+
+export type Grade = 'S' | 'A' | 'B' | 'C';
+export const GRADES: Grade[] = ['S', 'A', 'B', 'C'];
 
 export function newSave(): Save {
   return {
@@ -86,6 +97,9 @@ export function newSave(): Save {
     crowns: 0,
     best: 0,
     stickers: [],
+    bossBest: 0,
+    bossClears: 0,
+    bossGrade: '',
   };
 }
 
@@ -110,6 +124,9 @@ export function reviveSave(raw: unknown): Save {
     crowns: Math.max(0, Math.floor(num(r.crowns, 0))),
     best: Math.max(0, num(r.best, 0)),
     stickers: Array.isArray(r.stickers) ? r.stickers.filter((s) => typeof s === 'string') : [],
+    bossBest: Math.max(0, num(r.bossBest, 0)),
+    bossClears: Math.max(0, Math.floor(num(r.bossClears, 0))),
+    bossGrade: GRADES.includes(r.bossGrade as Grade) ? (r.bossGrade as Grade) : '',
   };
   for (const kind of ['skin', 'stream', 'pop'] as const) {
     const id = r.equipped?.[kind];
@@ -214,6 +231,7 @@ export function finishLap(save: Save, wrongShots: number, score: number): LapOut
     save.lastWrong = null;
     save.stage++;
     if (save.stage >= STAGES.length) {
+      // 보스 단계는 finishBoss 로 끝내므로 여기 오지 않지만, 안전하게 처음으로
       save.stage = 0;
       save.crowns++;
       crowned = true;
@@ -243,4 +261,76 @@ export function equip(save: Save, id: string): boolean {
   if (!item || !save.owned.includes(id)) return false;
   save.equipped[item.kind] = id;
   return true;
+}
+
+// ───────── 최종 시험(보스전) ─────────
+
+/** 글자 하나를 쓸 수 있는 시간(초). 보스 체력이 줄수록 짧아진다 */
+export function bossTime(level: number, hpRatio: number): number {
+  const base = 30 - Math.min(MAX_LEVEL, Math.max(MIN_LEVEL, level)) * 2;
+  const phase = bossPhase(hpRatio);
+  return Math.max(8, Math.round(base * [1, 0.8, 0.65][phase]));
+}
+
+/** 0 평상 · 1 화남(체력 50% 이하) · 2 분노(25% 이하) */
+export function bossPhase(hpRatio: number): 0 | 1 | 2 {
+  if (hpRatio <= 0.25) return 2;
+  if (hpRatio <= 0.5) return 1;
+  return 0;
+}
+
+export function gradeOf(wrongShots: number): Grade {
+  if (wrongShots === 0) return 'S';
+  if (wrongShots <= 2) return 'A';
+  if (wrongShots <= 5) return 'B';
+  return 'C';
+}
+
+export function betterGrade(a: Grade | '', b: Grade | ''): Grade | '' {
+  if (!a) return b;
+  if (!b) return a;
+  return GRADES.indexOf(a) <= GRADES.indexOf(b) ? a : b;
+}
+
+export interface BossOutcome {
+  grade: Grade;
+  perfect: boolean;
+  /** 이번 점수가 최고 기록인가 */
+  newBest: boolean;
+  coins: { label: string; amount: number }[];
+  total: number;
+  levelChange: number;
+}
+
+/**
+ * 최종 시험을 끝냈을 때: 왕관을 받고 처음 단계로 돌아간다.
+ * wrongShots: 틀리게 쓴(또는 시간을 넘긴) 횟수.
+ */
+export function finishBoss(save: Save, wrongShots: number, score: number): BossOutcome {
+  const grade = gradeOf(wrongShots);
+  const perfect = wrongShots === 0;
+  const coins: BossOutcome['coins'] = [{ label: '글자 도둑 대왕을 물리쳤어요', amount: 100 }];
+  if (perfect) coins.push({ label: '한 글자도 안 틀렸어요! (S)', amount: 100 });
+  else if (grade === 'A') coins.push({ label: '거의 완벽해요 (A)', amount: 50 });
+  else if (grade === 'B') coins.push({ label: '끝까지 버텼어요 (B)', amount: 20 });
+  coins.push({ label: '모든 단계 완료 왕관', amount: 100 });
+
+  const before = save.level;
+  if (perfect) save.level = Math.min(MAX_LEVEL, save.level + 1);
+  else if (wrongShots >= 8) save.level = Math.max(MIN_LEVEL, save.level - 1);
+
+  const newBest = score > save.bossBest;
+  save.bossBest = Math.max(save.bossBest, score);
+  save.bossClears++;
+  save.bossGrade = betterGrade(save.bossGrade, grade);
+  save.best = Math.max(save.best, score);
+  save.totalLaps++;
+  save.crowns++;
+  save.stage = 0;
+  save.lap = 0;
+  save.lastWrong = null;
+
+  const total = coins.reduce((n, c) => n + c.amount, 0);
+  save.coins += total;
+  return { grade, perfect, newBest, coins, total, levelChange: save.level - before };
 }

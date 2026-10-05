@@ -70,6 +70,32 @@ export const sfx = {
   bonus: () => [784, 988, 1175, 1568].forEach((f, i) => tone(f, 0.14, 'square', 0.07, undefined, i * 0.07)),
   wrong: () => tone(210, 0.2, 'sawtooth', 0.05, 130),
   clear: () => [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.18, 'triangle', 0.12, undefined, i * 0.11)),
+  /** 보스 등장: 낮게 울리는 포효 */
+  roar: () => {
+    tone(95, 0.9, 'sawtooth', 0.16, 38);
+    tone(140, 0.7, 'square', 0.05, 60, 0.05);
+    noise(0.8, 900, 120, 0.25);
+  },
+  /** 보스가 맞았을 때 */
+  bossHit: (combo = 0) => {
+    const f = 330 * Math.pow(2, Math.min(combo, 12) / 12);
+    tone(f, 0.16, 'square', 0.08, f * 0.5);
+    tone(f * 2, 0.1, 'triangle', 0.06, f * 3, 0.04);
+    noise(0.12, 3000, 800, 0.2);
+  },
+  /** 보스의 공격: 쿵 */
+  attack: () => {
+    tone(130, 0.35, 'sine', 0.3, 35);
+    tone(220, 0.18, 'sawtooth', 0.07, 90);
+    noise(0.25, 500, 80, 0.3);
+  },
+  /** 시간이 얼마 안 남았을 때 똑딱 */
+  tick: () => tone(1500, 0.04, 'square', 0.05, 1100),
+  /** 보스를 물리쳤을 때 팡파르 */
+  victory: () => {
+    [523, 659, 784, 1047, 784, 1047, 1319].forEach((f, i) => tone(f, i >= 5 ? 0.5 : 0.17, 'triangle', 0.13, undefined, i * 0.13));
+    [262, 330, 392, 523].forEach((f, i) => tone(f, 0.6, 'sine', 0.08, undefined, 0.65 + i * 0.02));
+  },
 };
 
 function koreanVoice(): SpeechSynthesisVoice | undefined {

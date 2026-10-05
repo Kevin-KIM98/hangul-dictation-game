@@ -67,17 +67,97 @@ export function cleanLine(line: string): string {
     .trim();
 }
 
-export async function recognize(canvas: HTMLCanvasElement, onProgress: (ratio: number) => void): Promise<string[]> {
+type KorWorker = Awaited<ReturnType<typeof import('tesseract.js').createWorker>>;
+
+/** 한국어 인식 워커. 인식 엔진과 언어 데이터는 public/tesseract 에 함께 배포한다(외부 CDN 불필요) */
+async function createKorWorker(logger: (m: { status: string; progress: number }) => void): Promise<KorWorker> {
   const mod = await import('tesseract.js');
   const createWorker = mod.createWorker ?? (mod as unknown as { default: typeof mod }).default.createWorker; // CJS 번들 대응
-  const worker = await createWorker('kor', 1, {
-    // 인식 엔진과 한국어 데이터는 public/tesseract 에 함께 배포한다(외부 CDN 불필요)
-    workerPath: `${ASSETS}/worker.min.js`,
-    corePath: ASSETS,
-    langPath: ASSETS,
-    logger: (m: { status: string; progress: number }) => {
-      if (m.status === 'recognizing text') onProgress(m.progress);
-    },
+  return createWorker('kor', 1, { workerPath: `${ASSETS}/worker.min.js`, corePath: ASSETS, langPath: ASSETS, logger });
+}
+
+// ───────── 손글씨 한 글자 읽기(최종 시험) ─────────
+
+let shared: Promise<KorWorker> | null = null;
+
+/**
+ * 손글씨용 워커를 미리 띄운다(보스 등장 연출 동안). onProgress 는 0~1.
+ * 실패하면 예외를 던지고 다음 호출에서 다시 시도한다.
+ */
+export function loadHandwriting(onProgress?: (ratio: number) => void): Promise<void> {
+  shared ??= (async () => {
+    const steps = ['loading tesseract core', 'initializing tesseract', 'loading language traineddata', 'initializing api'];
+    const worker = await createKorWorker((m) => {
+      const i = steps.indexOf(m.status);
+      if (i >= 0) onProgress?.((i + (m.progress || 0)) / steps.length);
+    });
+    // 한 단어(=한 글자)로 보고 읽는 모드가 글자 하나에 가장 정확하다
+    await worker.setParameters({ tessedit_pageseg_mode: '8' as never });
+    onProgress?.(1);
+    return worker;
+  })().catch((e) => {
+    shared = null;
+    throw e;
+  });
+  return shared.then(() => undefined);
+}
+
+export async function releaseHandwriting(): Promise<void> {
+  const w = shared;
+  shared = null;
+  if (w) await (await w).terminate().catch(() => {});
+}
+
+/** 손글씨 캔버스에서 읽힌 한글만 돌려준다(없으면 빈 문자열) */
+export async function readHandwriting(canvas: HTMLCanvasElement): Promise<string> {
+  await loadHandwriting();
+  const worker = await shared!;
+  const { data } = await worker.recognize(canvas);
+  return data.text.replace(/[^가-힣]/g, '');
+}
+
+const OCR_SIZE = 200;
+
+/**
+ * 쓴 글자를 인식하기 좋게 손질: 잉크 부분만 잘라 캔버스의 80% 크기로 가운데에 둔다.
+ * (글자가 작거나 구석에 있으면 인식률이 크게 떨어진다) 잉크가 없으면 null.
+ */
+export function normalizeHandwriting(src: HTMLCanvasElement): HTMLCanvasElement | null {
+  const w = src.width;
+  const h = src.height;
+  if (!w || !h) return null;
+  const data = src.getContext('2d')!.getImageData(0, 0, w, h).data;
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      if (data[i + 3] > 40 && data[i] + data[i + 1] + data[i + 2] < 384) {
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+    }
+  }
+  if (x1 < 0 || y1 < 0) return null;
+  const bw = x1 - x0 + 1;
+  const bh = y1 - y0 + 1;
+  const out = document.createElement('canvas');
+  out.width = out.height = OCR_SIZE;
+  const g = out.getContext('2d')!;
+  g.fillStyle = '#fff';
+  g.fillRect(0, 0, OCR_SIZE, OCR_SIZE);
+  const scale = (OCR_SIZE * 0.8) / Math.max(bw, bh);
+  const dw = bw * scale;
+  const dh = bh * scale;
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(src, x0, y0, bw, bh, (OCR_SIZE - dw) / 2, (OCR_SIZE - dh) / 2, dw, dh);
+  return out;
+}
+
+export async function recognize(canvas: HTMLCanvasElement, onProgress: (ratio: number) => void): Promise<string[]> {
+  const worker = await createKorWorker((m) => {
+    if (m.status === 'recognizing text') onProgress(m.progress);
   });
   try {
     // 호출하는 쪽에서 cleanForOcr 로 손질한 캔버스를 넘긴다

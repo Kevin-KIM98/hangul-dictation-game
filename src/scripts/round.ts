@@ -74,6 +74,12 @@ export class Round {
     return this.misses <= 2 ? 2 : 1;
   }
 
+  /** 글자를 못 쓴 채 시간이 지났을 때처럼, 글자 없이 하트만 잃는다 */
+  penalize(): void {
+    this.misses++;
+    this.hearts = Math.max(0, this.hearts - 1);
+  }
+
   /** 글자 풍선을 맞혔을 때. ok면 index번 빈칸이 채워진다 */
   hit(ch: string): { ok: boolean; index: number } {
     const i = this.nextIndex;
@@ -132,6 +138,12 @@ export class Game {
     const blanks = this.blanks(this.round.targetCount);
     if (blanks > 0) this.round.blankOut(blanks);
     return true;
+  }
+
+  /** 시간 초과 등: 하트만 잃고 콤보가 끊긴다 */
+  penalize(): void {
+    this.round.penalize();
+    this.combo = 0;
   }
 
   hit(ch: string): { ok: boolean; index: number; points: number; done: boolean } {

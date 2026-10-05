@@ -1,15 +1,21 @@
 // 게임 진행: 입력(마우스·터치) ↔ 로직(round) ↔ 화면(scene, HUD)
 import { Stage, type Balloon } from './scene.ts';
-import { Game, MAX_HEARTS } from './round.ts';
+import { Game, MAX_HEARTS, Round } from './round.ts';
 import { distractorsFor } from './hangul.ts';
 import { loadQuestions, parseQuestions, resetQuestions, saveQuestions } from './questions.ts';
 import { sfx, speak, stopSpeaking, unlock } from './audio.ts';
 import {
-  applyQuestionSet, blankCount, buy, difficulty, equip, finishLap, newSave, reviveSave, themeIndex, timeLimit,
+  applyQuestionSet, blankCount, bossPhase, bossTime, buy, difficulty, equip, finishBoss, finishLap, newSave, themeIndex, timeLimit,
   ITEMS, STAGES, type Difficulty, type ItemKind, type Mode, type Save,
 } from './campaign.ts';
+import {
+  Users, addFriend, decodeBrag, fameOf, nameError, normalizeName, passwordError, recordOf, type PlayerRecord, type StorageLike,
+} from './users.ts';
+import { Pad } from './pad.ts';
+import { BossView } from './boss.ts';
+import { drawBragCard, shareRecord } from './share.ts';
 
-type State = 'menu' | 'playing' | 'between' | 'paused' | 'result' | 'editor' | 'shop';
+type State = 'login' | 'menu' | 'playing' | 'boss' | 'between' | 'paused' | 'result' | 'editor' | 'shop' | 'fame';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>('stage');
@@ -22,25 +28,27 @@ const REREAD_DELAY = 700; // 틀린 뒤 문제를 다시 읽어 주기까지(ms)
 const BONUS_POINTS = 30;
 const PRAISE = ['좋아요!', '멋져요!', '잘한다!', '최고예요!', '대단해요!', '받아쓰기 천재!'];
 const STICKERS = ['🐶', '🐱', '🐰', '🐻', '🐼', '🦊', '🐯', '🦁', '🐸', '🐵', '🐧', '🦄', '🐳', '🦖', '🐝', '🦋', '🚀', '🌈', '🍭', '🎈'];
-const SAVE_KEY = 'dictation.save.v2';
+const BOSS_THEME = 2; // 별빛 밤 축제
+const HURRY_SECONDS = 5;
+const FAST_BONUS = 5; // 시간을 반 넘게 남기고 쓰면 추가 점수
 
-function loadSave(): Save {
+/** localStorage 를 못 쓰는 환경(사생활 보호 모드 등)에서는 이번 실행 동안만 기억한다 */
+function safeStorage(): StorageLike {
   try {
-    const raw = JSON.parse(localStorage.getItem(SAVE_KEY) ?? 'null');
-    if (raw) return reviveSave(raw);
-    // 이전 버전의 최고 점수·스티커 이어받기
-    return reviveSave(JSON.parse(localStorage.getItem('dictation.progress.v1') ?? 'null'));
+    localStorage.getItem('dictation.probe');
+    return localStorage;
   } catch {
-    return newSave();
+    const m = new Map<string, string>();
+    return { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => void m.set(k, v), removeItem: (k) => void m.delete(k) };
   }
 }
 
+const storage = safeStorage();
+const users = new Users(storage);
+
+/** 지금 들어와 있는 학생의 진행을 저장 */
 function persist(): void {
-  try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify(save));
-  } catch {
-    /* 저장소를 못 쓰면 이번 실행만 */
-  }
+  users.persist();
 }
 
 let stage: Stage;
@@ -55,13 +63,25 @@ let toastTimer = 0;
 let rereadTimer = 0;
 let bonusUsed = false;
 let earned: string[] = []; // 이번 판에서 받은 스티커
-const save = loadSave();
+let save: Save = users.current()?.save ?? newSave();
 let mode: Mode = 'full';
 let diff: Difficulty = difficulty(save.level, mode);
 let lapCoins = 0; // 이번 바퀴에서 번 코인
 let timeMax = 0; // 번개 모드 제한 시간(초)
 let timeLeft = 0;
 let shopBack: State = 'menu';
+let fameBack: State = 'menu';
+let playState: 'playing' | 'boss' = 'playing'; // 멈췄다가 돌아갈 화면
+let bragArrived: PlayerRecord | null = null; // 링크로 받은 친구 기록
+
+// 최종 시험(보스전)
+let pad: Pad;
+const boss = new BossView();
+let bossHp = 0;
+let bossMax = 0;
+let busy = false; // 글자를 읽는 중·정답 연출 중에는 제출을 막는다
+let padFallback = false; // 손글씨 인식을 못 쓰면 키보드 입력
+let lastTick = 0;
 
 const isLocked = () => document.pointerLockElement === canvas;
 
@@ -98,6 +118,15 @@ function renderBoard(): void {
   });
   board.append(word);
   paintBoard();
+  layoutBoss();
+}
+
+/** 보스는 글자판·시간 막대 아래에 자리 잡는다 */
+function layoutBoss(): void {
+  if (state !== 'boss') return;
+  const timer = $('timer');
+  const bottom = (timer.hidden ? board : timer).getBoundingClientRect().bottom;
+  $('boss').style.paddingTop = `${Math.round(bottom + 6)}px`;
 }
 
 function paintBoard(): void {
@@ -113,7 +142,17 @@ function paintBoard(): void {
 }
 
 function paintHud(): void {
-  const r = game.round;
+  const r = game.round as Game['round'] | undefined;
+  $('coins').textContent = String(save.coins);
+  $('score').textContent = String(game.score);
+  if (!r) {
+    // 보스 등장 중: 아직 문항이 없다
+    $('qnum').textContent = `${STAGES[save.stage].emoji} 0 / ${game.questions.length}`;
+    $('hearts').textContent = '❤️'.repeat(MAX_HEARTS);
+    $('combo').textContent = '';
+    $('hint').hidden = true;
+    return;
+  }
   $('qnum').textContent = `${STAGES[save.stage].emoji} ${game.index + 1} / ${game.questions.length}`;
   $('coins').textContent = String(save.coins);
   $('hearts').textContent = '❤️'.repeat(r.hearts) + '🤍'.repeat(MAX_HEARTS - r.hearts);
@@ -132,7 +171,12 @@ function paintMenu(): void {
   applyQuestionSet(save, questions.list);
   persist();
   const def = STAGES[save.stage];
-  $('record').textContent = `${def.emoji} ${def.name} ${save.lap + 1}바퀴째 · 🪙 ${save.coins}${save.crowns ? ` · 👑 ${save.crowns}` : ''}`;
+  const me = users.current();
+  $('player-name').textContent = me ? `👤 ${me.name}` : '👤';
+  const progress = def.mode === 'boss' ? `${def.emoji} ${def.name} 도전!` : `${def.emoji} ${def.name} ${save.lap + 1}바퀴째`;
+  const boss = save.bossClears ? ` · 🐉 ${save.bossGrade}` : '';
+  $('record').textContent = `${progress} · 🪙 ${save.coins}${save.crowns ? ` · 👑 ${save.crowns}` : ''}${boss}`;
+  $('start').textContent = def.mode === 'boss' ? '🐉 최종 시험 시작' : '게임 시작';
 }
 
 function addCoins(n: number): void {
@@ -149,7 +193,7 @@ function applyLook(): string {
 }
 
 function paintTimer(): void {
-  $('timer').hidden = mode !== 'speed';
+  $('timer').hidden = mode !== 'speed' && mode !== 'boss';
   $('timer-bar').style.width = `${timeMax ? (timeLeft / timeMax) * 100 : 0}%`;
 }
 
@@ -225,6 +269,7 @@ function readQuestion(): void {
 /** 한 바퀴(1번~마지막 문항) 시작. 단계·난이도·배경은 저장된 진행에 따라 정해진다 */
 function startGame(): void {
   const def = STAGES[save.stage];
+  if (def.mode === 'boss') return void startBoss();
   mode = def.mode;
   diff = difficulty(save.level, mode);
   game = new Game(questions.list, mode === 'blank' ? (n) => blankCount(n, save.level) : undefined);
@@ -244,11 +289,12 @@ function startGame(): void {
 }
 
 function nextQuestion(): void {
-  if (!game.nextQuestion()) return showResult();
+  if (!game.nextQuestion()) return mode === 'boss' ? showBossResult() : showResult();
   stage.clearBalloons();
   clearTimeout(rereadTimer);
   bonusUsed = false;
   lastCorrect = performance.now();
+  if (mode === 'boss') return nextBossQuestion();
   timeMax = timeLeft = mode === 'speed' ? timeLimit(game.round.targetCount, save.level) : 0;
   paintTimer();
   renderBoard();
@@ -343,6 +389,10 @@ function showClear(): void {
     const bonus = 2 + Math.ceil((timeLeft / timeMax) * 8);
     addCoins(bonus);
     extra = ` · ⚡🪙+${bonus}`;
+  } else if (mode === 'boss') {
+    const bonus = 2 + Math.max(0, MAX_HEARTS - res.misses) * 2;
+    addCoins(bonus);
+    extra = ` · 🐉🪙+${bonus}`;
   }
   $('clear-sticker').textContent = `스티커 선물 ${sticker}${extra}`;
   persist();
@@ -398,9 +448,13 @@ function showResult(): void {
   $('result-total').textContent = `이번 바퀴 🪙 +${lapCoins} · 가진 코인 🪙 ${save.coins}`;
   $('result-stickers').textContent = earned.join(' ');
   $('again').textContent = out.advanced ? `${next.emoji} ${next.name} 시작` : `🔁 다시 도전 (${save.lap + 1}바퀴)`;
+  $('result-share').hidden = true;
   stage.celebrate(out.perfect ? 16 : 5);
   if (out.perfect) sfx.bonus();
+  renderResultList();
+}
 
+function renderResultList(): void {
   $('result-list').replaceChildren(
     ...game.results.map((r) => {
       const li = document.createElement('li');
@@ -420,6 +474,452 @@ function showResult(): void {
       return li;
     }),
   );
+}
+
+// ───────── 최종 시험(보스전): 화면에 직접 글자를 쓴다 ─────────
+
+function quake(): void {
+  document.body.classList.remove('quake');
+  void document.body.offsetWidth;
+  document.body.classList.add('quake');
+  stage.shake(1.2);
+  navigator.vibrate?.([80, 40, 80]);
+}
+
+/** 보스 등장: 손글씨 인식 엔진을 준비하는 동안 등장 연출을 보여 준다 */
+async function startBoss(): Promise<void> {
+  mode = 'boss';
+  diff = difficulty(save.level, 'full');
+  game = new Game(questions.list);
+  earned = [];
+  lapCoins = 0;
+  busy = true;
+  releaseLock();
+  const theme = stage.setTheme(BOSS_THEME);
+  document.body.style.background = theme.sky;
+  stage.setLoadout(save.equipped);
+  stage.clearBalloons();
+  bossMax = bossHp = questions.list.reduce((n, q) => n + new Round(q).targetCount, 0);
+  setState('boss');
+  boss.show(true);
+  boss.setHp(bossHp, bossMax);
+  board.replaceChildren();
+  timeMax = timeLeft = 0;
+  paintTimer();
+  paintHud();
+  pad.enabled = false;
+  pad.clear();
+  pad.setTrace(null);
+  $('pad-title').textContent = '🐉 준비하세요…';
+  const load = $('boss-load');
+  const sub = $('boss-load-sub');
+  sub.textContent = '손글씨 인식 준비 중 0%';
+  load.classList.add('show');
+  sfx.roar();
+  quake();
+
+  const { loadHandwriting } = await import('./ocr.ts');
+  try {
+    await loadHandwriting((p) => (sub.textContent = `손글씨 인식 준비 중 ${Math.round(p * 100)}%`));
+    padFallback = false;
+  } catch {
+    padFallback = true;
+  }
+  if (state !== 'boss') return; // 기다리다 나갔다
+  load.classList.remove('show');
+  applyPadMode();
+  if (padFallback) toast('손글씨 인식을 쓸 수 없어 키보드로 글자를 적어요', 3200);
+  boss.intro();
+  sfx.roar();
+  setTimeout(() => state === 'boss' && nextQuestion(), 1400);
+}
+
+function applyPadMode(): void {
+  $('pad').hidden = padFallback;
+  $('pad-undo').hidden = padFallback;
+  $('pad-clear').hidden = padFallback;
+  $<HTMLInputElement>('pad-type').hidden = !padFallback;
+  pad.resize();
+}
+
+function nextBossQuestion(): void {
+  busy = false;
+  pad.enabled = true;
+  pad.clear();
+  pad.setTrace(null);
+  $<HTMLInputElement>('pad-type').value = '';
+  renderBoard();
+  paintHud();
+  paintPadTitle();
+  resetBossTimer();
+  setState('boss');
+  readQuestion();
+  if (padFallback) $('pad-type').focus();
+}
+
+function paintPadTitle(): void {
+  const r = game.round;
+  const left = r.cells.filter((c) => !c.filled).length;
+  $('pad-title').textContent = `${padFallback ? '⌨️' : '✏️'} ${game.index + 1}번 · 빨간 칸의 글자를 ${padFallback ? '적어요' : '써요'} (${left}글자 남음)`;
+}
+
+function resetBossTimer(): void {
+  timeMax = timeLeft = bossTime(save.level, bossMax ? bossHp / bossMax : 1);
+  lastTick = Math.ceil(timeLeft);
+  document.body.classList.remove('hurry');
+  paintTimer();
+  layoutBoss();
+}
+
+function tickBoss(dt: number): void {
+  if (busy || timeMax <= 0) return;
+  timeLeft = Math.max(0, timeLeft - dt);
+  paintTimer();
+  const secs = Math.ceil(timeLeft);
+  if (secs <= HURRY_SECONDS) {
+    document.body.classList.add('hurry');
+    if (secs < lastTick && secs > 0) sfx.tick();
+  }
+  lastTick = secs;
+  if (timeLeft <= 0) bossTimeout();
+}
+
+function updateBossHint(): void {
+  pad.setTrace(game.round.hintMode ? game.round.nextChar : null);
+  if (game.round.hintMode) $('pad-title').textContent = '💡 연한 글자를 따라 써요';
+}
+
+/** 시간 초과: 보스의 공격 */
+function bossTimeout(): void {
+  game.penalize();
+  sfx.attack();
+  boss.attack('timeout');
+  quake();
+  $('hearts').classList.remove('shake');
+  void $('hearts').offsetWidth;
+  $('hearts').classList.add('shake');
+  popup('⏰ 시간 끝!', window.innerWidth / 2, window.innerHeight * 0.4, 'oops');
+  paintHud();
+  updateBossHint();
+  resetBossTimer();
+  rereadSoon();
+}
+
+/** [다 썼어요]: 쓴 글자를 읽어서 판정 */
+async function submitWriting(): Promise<void> {
+  if (state !== 'boss' || busy) return;
+  unlock();
+  let text: string;
+  if (padFallback) {
+    const input = $<HTMLInputElement>('pad-type');
+    text = input.value.replace(/[^가-힣]/g, '');
+    input.value = '';
+    if (!text) return toast('글자를 적어 주세요');
+  } else {
+    const img = pad.toImage();
+    if (!img) return toast('먼저 글자를 써 보세요 ✏️', 1600);
+    const { normalizeHandwriting, readHandwriting } = await import('./ocr.ts');
+    const norm = normalizeHandwriting(img);
+    if (!norm) return toast('먼저 글자를 써 보세요 ✏️', 1600);
+    const ok = $<HTMLButtonElement>('pad-ok');
+    busy = true;
+    $('pad-panel').classList.add('busy');
+    ok.disabled = true;
+    ok.textContent = '👀 읽는 중…';
+    try {
+      text = await readHandwriting(norm);
+    } catch {
+      text = '';
+      toast('글자를 읽지 못했어요. 다시 써 볼까요?', 2000);
+    } finally {
+      busy = false;
+      $('pad-panel').classList.remove('busy');
+      ok.disabled = false;
+      ok.textContent = '✔ 다 썼어요';
+    }
+    if (state !== 'boss') return;
+  }
+  onWritten(text);
+}
+
+/** 읽힌 글자(한글만)로 판정 */
+function onWritten(text: string): void {
+  const expected = game.round.nextChar;
+  if (!expected || busy) return;
+  if (text.includes(expected)) return bossHitBy(expected);
+  pad.clear();
+  if (!text) {
+    sfx.wrong();
+    boss.unread();
+    return;
+  }
+  // 다른 글자를 썼다: 보스의 공격
+  game.hit([...text][0]);
+  sfx.attack();
+  boss.attack('wrong');
+  quake();
+  $('hearts').classList.remove('shake');
+  void $('hearts').offsetWidth;
+  $('hearts').classList.add('shake');
+  toast(`'${text}'(으)로 읽혔어요. 다시 잘 듣고 또박또박 써요!`, 2600);
+  paintHud();
+  updateBossHint();
+  resetBossTimer();
+  rereadSoon();
+}
+
+/** 맞게 썼다: 보스가 맞는다 */
+function bossHitBy(ch: string): void {
+  const r = game.hit(ch);
+  if (!r.ok) return;
+  clearTimeout(rereadTimer);
+  bossHp = Math.max(0, bossHp - 1);
+  const fast = timeMax > 0 && timeLeft > timeMax / 2;
+  if (fast) game.score += FAST_BONUS;
+  addCoins(game.combo % 5 === 0 ? 3 : 1);
+  const at = $('boss-sprite').getBoundingClientRect();
+  const x = at.left + at.width / 2;
+  const y = at.top + at.height / 2;
+  sfx.bossHit(game.combo);
+  boss.hurt();
+  boss.setHp(bossHp, bossMax);
+  boss.setPhase(bossPhase(bossMax ? bossHp / bossMax : 0));
+  stage.shake(0.5);
+  stage.celebrate(2);
+  popup(`${ch} +${r.points + (fast ? FAST_BONUS : 0)}`, x, y - 30);
+  if (fast) popup('⚡ 빠른 공격!', x, y + 30, 'bonus');
+  if (game.combo >= 2 && game.combo % 2 === 0) praise();
+  pad.clear();
+  pad.setTrace(null);
+  paintBoard();
+  paintHud();
+  if (r.done) {
+    busy = true;
+    pad.enabled = false;
+    setTimeout(showClear, 500);
+  } else {
+    paintPadTitle();
+    updateBossHint();
+    resetBossTimer();
+  }
+}
+
+/** 보스를 물리쳤다: 왕관·등급·기록 */
+function showBossResult(): void {
+  setState('result');
+  busy = false;
+  document.body.classList.remove('hurry');
+  stage.clearBalloons();
+  releaseLock();
+  boss.beaten();
+  sfx.victory();
+  stage.celebrate(24);
+  const out = finishBoss(save, game.wrongShots, game.score);
+  lapCoins += out.total;
+  save.stickers = [...new Set([...save.stickers, ...earned])];
+  persist();
+  void import('./ocr.ts').then((m) => m.releaseHandwriting());
+  setTimeout(() => boss.show(false), 1800);
+
+  $('result-title').textContent = `🏆 최종 시험 통과! ${out.grade}등급`;
+  $('result-score').textContent = `🐉 글자 도둑 대왕 격파 · ${game.score}점${out.newBest ? ' · 🆕 최고 기록!' : ''}`;
+  let message = out.perfect
+    ? '한 글자도 안 틀렸어요! 왕관을 받고 명예의 전당에 올랐어요.'
+    : `${game.wrongShots}번 틀렸지만 끝까지 해냈어요! 왕관을 받고 명예의 전당에 올랐어요.`;
+  if (out.levelChange > 0) message += ' (난이도 ⬆)';
+  if (out.levelChange < 0) message += ' (조금 쉽게 해 줄게요)';
+  $('result-stars').textContent = message;
+  const rows = [{ label: '되찾은 글자·보너스', amount: lapCoins - out.total }, ...out.coins];
+  $('result-coins').replaceChildren(
+    ...rows.map((c) => {
+      const li = document.createElement('li');
+      const label = document.createElement('span');
+      label.textContent = c.label;
+      const amount = document.createElement('b');
+      amount.textContent = `🪙 +${c.amount}`;
+      li.append(label, amount);
+      return li;
+    }),
+  );
+  $('result-total').textContent = `이번 시험 🪙 +${lapCoins} · 가진 코인 🪙 ${save.coins}`;
+  $('result-stickers').textContent = earned.join(' ');
+  $('again').textContent = `${STAGES[0].emoji} 새 배경에서 처음부터 다시`;
+  $('result-share').hidden = false;
+  renderResultList();
+}
+
+// ───────── 학생 로그인 ─────────
+
+function showLogin(): void {
+  clearTimeout(rereadTimer);
+  stopSpeaking();
+  releaseLock();
+  setState('login');
+  $('login-form').hidden = false;
+  $('login-new').hidden = true;
+  $('login-msg').textContent = '';
+  $<HTMLInputElement>('login-name').value = '';
+  $<HTMLInputElement>('login-pw').value = '';
+  const known = $('login-known');
+  known.replaceChildren(
+    ...users.list().slice(0, 8).map((a) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'chip-btn';
+      b.textContent = `👤 ${a.name}`;
+      b.addEventListener('click', () => {
+        $<HTMLInputElement>('login-name').value = a.name;
+        $('login-pw').focus();
+      });
+      return b;
+    }),
+  );
+}
+
+/** 들어온 학생의 진행으로 바꾸고 메뉴로 */
+function enter(account: { name: string; save: Save }, fresh: boolean): void {
+  save = account.save;
+  unlock();
+  toMenu();
+  toast(fresh ? `🌟 ${account.name} 친구, 환영해요! 모험을 시작해요` : `👋 ${account.name} 친구, 어서 와요!`, 2600);
+  if (bragArrived) {
+    bragArrived = null;
+    openFame();
+  }
+}
+
+function bindLogin(): void {
+  const name = $<HTMLInputElement>('login-name');
+  const pw = $<HTMLInputElement>('login-pw');
+  const msg = $('login-msg');
+  $('login-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const err = nameError(name.value) ?? passwordError(pw.value);
+    if (err) return void (msg.textContent = err);
+    if (users.has(name.value)) {
+      const r = users.login(name.value, pw.value);
+      if ('error' in r) return void (msg.textContent = r.error);
+      return enter(r, false);
+    }
+    msg.textContent = '';
+    $('login-new-name').textContent = normalizeName(name.value);
+    $('login-form').hidden = true;
+    $('login-new').hidden = false;
+  });
+  $('login-create').addEventListener('click', () => {
+    const r = users.register(name.value, pw.value);
+    $('login-form').hidden = false;
+    $('login-new').hidden = true;
+    if ('error' in r) return void (msg.textContent = r.error);
+    enter(r, true);
+  });
+  $('login-back').addEventListener('click', () => {
+    $('login-form').hidden = false;
+    $('login-new').hidden = true;
+    name.focus();
+  });
+  $('logout').addEventListener('click', () => {
+    persist();
+    users.logout();
+    save = newSave();
+    showLogin();
+  });
+}
+
+// ───────── 명예의 전당 · 자랑하기 ─────────
+
+function openFame(): void {
+  if (state !== 'fame') fameBack = state;
+  renderFame();
+  $('share-box').hidden = true;
+  setState('fame');
+}
+
+function renderFame(): void {
+  const me = users.current();
+  const medals = ['🥇', '🥈', '🥉'];
+  $('fame-share').hidden = !me;
+  $('fame-list').replaceChildren(
+    ...users.records().map((r, i) => {
+      const li = document.createElement('li');
+      if (me && !r.friend && r.name === me.name) li.classList.add('me');
+      const rank = document.createElement('span');
+      rank.className = 'f-rank';
+      rank.textContent = medals[i] ?? `${i + 1}`;
+      const name = document.createElement('span');
+      name.className = 'f-name';
+      name.textContent = r.friend ? `${r.name} 👫` : r.name;
+      const fame = document.createElement('span');
+      fame.className = 'f-fame';
+      fame.textContent = `${fameOf(r)}점`;
+      const detail = document.createElement('span');
+      detail.className = 'f-detail';
+      const bossText = r.bossClears ? `${r.bossGrade}등급 ${r.bossBest}점` : '도전 중';
+      detail.textContent = `👑 ${r.crowns} · ⭐ ${r.best} · 🐉 ${bossText}${r.friend ? ' · 링크로 받은 친구' : ''}`;
+      li.append(rank, name, fame, detail);
+      return li;
+    }),
+  );
+}
+
+async function shareMine(): Promise<void> {
+  const me = users.current();
+  if (!me) return;
+  const record = recordOf(me.name, save, Date.now());
+  const canvas = $<HTMLCanvasElement>('share-card');
+  drawBragCard(canvas, record);
+  const box = $('share-box');
+  box.hidden = false;
+  const status = $('share-status');
+  status.textContent = '자랑 카드를 만들었어요…';
+  const out = await shareRecord(canvas, record);
+  $<HTMLTextAreaElement>('share-text').value = out.text;
+  try {
+    $<HTMLAnchorElement>('share-download').href = canvas.toDataURL('image/png');
+  } catch {
+    $('share-download').hidden = true;
+  }
+  status.textContent =
+    out.how === 'shared'
+      ? '친구에게 보냈어요! 링크를 열면 친구의 명예의 전당에 내 기록이 들어가요.'
+      : out.how === 'copied'
+        ? '자랑 글을 복사했어요. 메신저에 붙여 넣어 친구에게 보내요!'
+        : '아래 글을 복사해서 친구에게 보내요. 링크를 열면 내 기록이 친구 화면에 나와요.';
+  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function bindFame(): void {
+  $('fame-open').addEventListener('click', openFame);
+  $('result-share').addEventListener('click', () => {
+    openFame();
+    void shareMine();
+  });
+  $('fame-share').addEventListener('click', () => void shareMine());
+  $('share-copy').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText($<HTMLTextAreaElement>('share-text').value);
+      toast('복사했어요! 친구에게 붙여 넣어요', 1800);
+    } catch {
+      $<HTMLTextAreaElement>('share-text').select();
+      toast('글을 길게 눌러 복사해요', 1800);
+    }
+  });
+  $('fame-close').addEventListener('click', () => {
+    if (fameBack === 'result') setState('result');
+    else toMenu();
+  });
+}
+
+/** 친구가 보낸 자랑 링크(#brag=…)를 받아 둔다 */
+function receiveBrag(): void {
+  const m = location.hash.match(/brag=([A-Za-z0-9_-]+)/);
+  if (!m) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  const record = decodeBrag(m[1]);
+  if (!record) return toast('자랑 링크를 읽을 수 없어요', 2600);
+  addFriend(storage, record);
+  bragArrived = record;
+  toast(`👫 ${record.name} 친구의 기록이 도착했어요! 명예의 전당에서 비교해 봐요`, 4000);
 }
 
 // ───────── 꾸미기 상점 ─────────
@@ -481,7 +981,9 @@ function pickItem(id: string): void {
 }
 
 function pause(): void {
-  if (state !== 'playing') return;
+  if (state !== 'playing' && state !== 'boss') return;
+  if (state === 'boss' && busy) return; // 글자를 읽는 중·정답 연출 중에는 잠시 뒤에
+  playState = state;
   setState('paused');
   clearTimeout(rereadTimer);
   stopSpeaking();
@@ -490,8 +992,9 @@ function pause(): void {
 
 function resume(): void {
   if (state !== 'paused') return;
-  setState('playing');
+  setState(playState);
   lastCorrect = performance.now();
+  if (playState === 'boss') layoutBoss();
 }
 
 function closeShop(): void {
@@ -503,7 +1006,15 @@ function toMenu(): void {
   clearTimeout(rereadTimer);
   stopSpeaking();
   releaseLock();
+  if (mode === 'boss') {
+    busy = false;
+    boss.show(false);
+    document.body.classList.remove('hurry');
+    void import('./ocr.ts').then((m) => m.releaseHandwriting());
+  }
+  mode = 'full';
   setState('menu');
+  applyLook();
   decorate();
   paintMenu();
 }
@@ -682,21 +1193,26 @@ function bindInput(): void {
   });
 
   window.addEventListener('keydown', (e) => {
+    const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
     if (e.code === 'Space' && state === 'playing') {
       e.preventDefault();
       shoot(null);
-    } else if (e.code === 'KeyR' && state === 'playing') {
+    } else if (e.code === 'Enter' && state === 'boss') {
+      e.preventDefault();
+      void submitWriting();
+    } else if (e.code === 'KeyR' && (state === 'playing' || state === 'boss') && !typing) {
       readQuestion();
-    } else if (e.code === 'Escape' || e.code === 'KeyP') {
-      if (state === 'playing') pause();
+    } else if (e.code === 'Escape' || (e.code === 'KeyP' && !typing)) {
+      if (state === 'playing' || state === 'boss') pause();
       else if (state === 'paused') resume();
     }
   });
 
   const startFrom = (e: MouseEvent) => {
     unlock();
+    const bossNext = STAGES[save.stage].mode === 'boss';
     startGame();
-    if ((e as PointerEvent).pointerType === 'mouse') requestLock();
+    if (!bossNext && (e as PointerEvent).pointerType === 'mouse') requestLock();
   };
   $('start').addEventListener('click', startFrom);
   $('again').addEventListener('click', startFrom);
@@ -709,10 +1225,21 @@ function bindInput(): void {
   $('pause').addEventListener('click', pause);
   $('resume').addEventListener('click', (e) => {
     resume();
-    if ((e as PointerEvent).pointerType === 'mouse') requestLock();
+    if (state === 'playing' && (e as PointerEvent).pointerType === 'mouse') requestLock();
   });
 
+  // 손글씨 패드
+  pad = new Pad($<HTMLCanvasElement>('pad'));
+  $('pad-ok').addEventListener('click', () => void submitWriting());
+  $('pad-undo').addEventListener('click', () => pad.undo());
+  $('pad-clear').addEventListener('click', () => pad.clear());
+  $('pad-replay').addEventListener('click', () => state === 'boss' && readQuestion());
+  $('pad-pause').addEventListener('click', pause);
+  $<HTMLCanvasElement>('pad').addEventListener('pointerdown', unlock);
+
   bindEditor();
+  bindLogin();
+  bindFame();
 
   $<HTMLInputElement>('file').addEventListener('change', async (e) => {
     const input = e.target as HTMLInputElement;
@@ -733,7 +1260,11 @@ function bindInput(): void {
   });
 
   document.addEventListener('visibilitychange', () => document.hidden && pause());
-  window.addEventListener('resize', () => stage.resize());
+  window.addEventListener('resize', () => {
+    stage.resize();
+    pad.resize();
+    layoutBoss();
+  });
   // 모바일: 두 번 탭 확대·길게 눌러 메뉴 방지
   document.addEventListener('contextmenu', (e) => e.preventDefault());
   document.addEventListener('dblclick', (e) => e.preventDefault());
@@ -745,11 +1276,21 @@ async function boot(): Promise<void> {
   // 풍선 글자를 그리기 전에 글꼴을 기다린다(실패해도 기본 글꼴로 진행)
   await Promise.race([document.fonts.load('150px Jua', '한글'), new Promise((r) => setTimeout(r, 1500))]).catch(() => {});
   stage = new Stage(canvas);
-  setState('menu');
-  paintMenu();
+  bindInput();
+  receiveBrag();
   applyLook();
   decorate();
-  bindInput();
+  const me = users.current();
+  if (me) {
+    setState('menu');
+    paintMenu();
+    if (bragArrived) {
+      bragArrived = null;
+      openFame();
+    }
+  } else {
+    showLogin();
+  }
 
   let prev = performance.now();
   let hintTick = 0;
@@ -757,6 +1298,7 @@ async function boot(): Promise<void> {
     const dt = Math.min(0.05, (now - prev) / 1000);
     prev = now;
     if (state === 'playing') tickTimer(dt);
+    if (state === 'boss') tickBoss(dt);
     if (state === 'playing' && (hintTick += dt) > 0.5) {
       hintTick = 0;
       updateHint();
@@ -772,10 +1314,28 @@ async function boot(): Promise<void> {
     get game() { return game; },
     get stage() { return stage; },
     get save() { return save; },
+    get users() { return users; },
+    get pad() { return pad; },
+    get boss() { return { hp: bossHp, max: bossMax, busy, fallback: padFallback, timeLeft }; },
     hitChar(ch: string) {
       const b = stage.balloons.find((x) => x.ch === ch);
       if (b && state === 'playing') onHit(b);
       return !!b;
+    },
+    /** 최종 시험: 글꼴로 글자를 찍어 제출(손글씨 인식까지 거친다) */
+    write(ch: string) {
+      if (state !== 'boss') return Promise.resolve(false);
+      pad.stamp(ch);
+      return submitWriting().then(() => true);
+    },
+    /** 최종 시험: 읽힌 글자를 바로 넣는다(인식 없이 판정만) */
+    written(text: string) {
+      if (state !== 'boss') return false;
+      onWritten(text);
+      return true;
+    },
+    timeout() {
+      if (state === 'boss') bossTimeout();
     },
   };
 }
