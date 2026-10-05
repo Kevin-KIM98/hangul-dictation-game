@@ -295,8 +295,10 @@ export class Stage {
 
   /** 시야 이동 (라디안). 범위 제한 */
   look(dyaw: number, dpitch: number): void {
-    this.yaw = THREE.MathUtils.clamp(this.yaw + dyaw, -0.5, 0.5);
-    this.pitch = THREE.MathUtils.clamp(this.pitch + dpitch, this.basePitch - 0.3, this.basePitch + 0.3);
+    // 풍선이 놓이는 범위보다 넉넉하게: 가장자리 풍선도 조준점 한가운데에 올 수 있어야 한다
+    const yawMax = this.yawSpread + 0.25;
+    this.yaw = THREE.MathUtils.clamp(this.yaw + dyaw, -yawMax, yawMax);
+    this.pitch = THREE.MathUtils.clamp(this.pitch + dpitch, this.pitchMin - 0.2, this.pitchMax + 0.2);
   }
 
   private place(b: Balloon): void {
