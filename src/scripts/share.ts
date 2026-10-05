@@ -1,5 +1,5 @@
 // 자랑 카드: 기록을 그림으로 만들어 공유(Web Share)하거나 저장한다
-import { bragText, encodeBrag, fameOf, type PlayerRecord } from './users.ts';
+import { bragText, displayName, encodeBrag, fameOf, type PlayerRecord } from './users.ts';
 
 const FONT = '"Jua", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif';
 
@@ -52,12 +52,16 @@ export function drawBragCard(canvas: HTMLCanvasElement, r: PlayerRecord): void {
   g.fillText('받아쓰기 풍선 사격', W / 2, 112);
   g.fillStyle = '#1d2b53';
   g.font = `46px ${FONT}`;
-  g.fillText(`🏆 ${r.name}의 기록`, W / 2, 166);
+  g.fillText(`🏆 ${displayName(r)}의 기록`, W / 2, 166);
+  g.font = `18px ${FONT}`;
+  g.fillStyle = '#5a6a92';
+  g.fillText(`@${r.id}${r.school ? ` · ${r.school}` : ''}`, W / 2, 192);
+  g.fillStyle = '#1d2b53';
 
   g.font = `30px ${FONT}`;
   const lines = [`👑 왕관 ${r.crowns}개   ⭐ 최고 ${r.best}점`];
   lines.push(r.bossClears ? `🐉 최종 시험 ${r.bossGrade}등급 · ${r.bossBest}점` : '🐉 최종 시험 도전 중!');
-  lines.forEach((t, i) => g.fillText(t, W / 2, 222 + i * 46));
+  lines.forEach((t, i) => g.fillText(t, W / 2, 236 + i * 42));
 
   g.fillStyle = '#ff5d5d';
   roundRect(g, W / 2 - 150, 300, 300, 56, 18);

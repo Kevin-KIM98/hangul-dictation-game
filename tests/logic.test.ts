@@ -5,7 +5,7 @@ import { compose, decompose, distractorsFor, similar } from '../src/scripts/hang
 import { Game, Round } from '../src/scripts/round.ts';
 import {
   BOSS_STAGE, ITEMS, MIN_WIN_LAPS, RECKLESS_SHOTS, STAGES, applyQuestionSet, applyWarning, bossPhase, bossTime, buy, difficulty, equip, finishBoss, finishLap,
-  gradeOf, newSave, recordBadShot, reviveSave, winPoints,
+  canResume, gradeOf, newSave, recordBadShot, reviveSave, reviveSnapshot, winPoints,
 } from '../src/scripts/campaign.ts';
 
 test('음절 분해·조합', () => {
@@ -217,4 +217,33 @@ test('상점: 최종 무기는 가장 비싸고, 물총 크기가 다양하다',
   const sizes = new Set(ITEMS.filter((i) => i.kind === 'skin').map((i) => i.size));
   assert.ok(sizes.size >= 5);
   assert.ok(new Set(ITEMS.map((i) => i.id)).size === ITEMS.length);
+});
+
+test('이어하기: 끝낸 문항·점수·결과를 되살리고 다음 문항부터 간다', () => {
+  const g = new Game(['가', '나', '다']);
+  assert.equal(g.restore({ index: 3, score: 10, results: [] }), false); // 다 끝난 바퀴는 이어할 수 없다
+  assert.equal(g.restore({ index: 1, score: 10, results: [] }), false); // 결과 수가 맞지 않는다
+  assert.ok(g.restore({ index: 2, score: 32, results: [{ text: '가', stars: 3, misses: 0, wrong: [] }, { text: '나', stars: 2, misses: 1, wrong: ['너'] }] }));
+  assert.ok(g.nextQuestion());
+  assert.deepEqual([g.index, g.round.text, g.score, g.combo, g.wrongShots], [2, '다', 32, 0, 1]);
+  assert.ok(g.hit('다').done);
+  assert.equal(g.nextQuestion(), false);
+  assert.equal(g.results.length, 3);
+});
+
+test('이어하기 저장은 같은 문제 묶음·단계·바퀴에서만 쓴다', () => {
+  const s = newSave();
+  applyQuestionSet(s, ['가', '나', '다']);
+  const snap = reviveSnapshot({ setKey: s.setKey, stage: 0, lap: 0, index: 1, score: 10, results: [{ text: '가', stars: 3, misses: 0, wrong: [] }], earned: ['🐶'], lapCoins: 3, lapWarnings: 0, savedAt: 1 });
+  assert.ok(snap);
+  s.resume = snap;
+  assert.ok(canResume(s, 3));
+  assert.equal(canResume(s, 1), false);
+  s.lap = 1;
+  assert.equal(canResume(s, 3), false);
+  s.lap = 0;
+  applyQuestionSet(s, ['라']);
+  assert.equal(s.resume, null);
+  assert.equal(reviveSnapshot({ setKey: 'x', index: 2, results: [{ text: '가' }] }), null);
+  assert.equal(reviveSave({ resume: { setKey: 'k', stage: 0, lap: 0, index: 1, results: [{ text: '가' }] } }).resume?.index, 1);
 });

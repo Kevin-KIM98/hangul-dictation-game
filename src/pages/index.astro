@@ -89,17 +89,39 @@
         <h1>받아쓰기 <br />풍선 사격</h1>
         <div id="login-known" class="chips"></div>
         <form id="login-form" autocomplete="off">
-          <input id="login-name" type="text" maxlength="10" placeholder="이름" autocomplete="off" enterkeyhint="next" />
+          <input id="login-id" type="text" maxlength="12" placeholder="아이디" autocomplete="off" enterkeyhint="next" />
           <input id="login-pw" type="password" maxlength="20" placeholder="비밀번호 (2글자 이상)" autocomplete="off" enterkeyhint="go" />
           <p id="login-msg" class="status"></p>
           <button id="login-go" class="big" type="submit">들어가기</button>
+          <button id="login-first" class="ghost strong" type="button">🌟 처음이에요 · 새로 만들기</button>
         </form>
         <div id="login-new" hidden>
-          <p class="status"><b id="login-new-name"></b> 친구는 처음이에요. 새로 시작할까요?</p>
-          <button id="login-create" class="big" type="button">🌟 새로 만들기</button>
-          <button id="login-back" class="ghost" type="button">아니요, 다시 적을래요</button>
+          <p class="status">나만의 아이디를 정해요. 이름과 학교는 적어도 되고 안 적어도 돼요.</p>
+          <div class="form">
+            <input id="new-id" type="text" maxlength="12" placeholder="아이디 (예: 민수01)" autocomplete="off" />
+            <input id="new-pw" type="password" maxlength="20" placeholder="비밀번호 (2글자 이상)" autocomplete="off" />
+            <input id="new-name" type="text" maxlength="10" placeholder="이름 (선택)" autocomplete="off" />
+            <input id="new-school" type="text" maxlength="20" placeholder="학교 (선택)" autocomplete="off" />
+          </div>
+          <p id="new-msg" class="status"></p>
+          <button id="login-create" class="big" type="button">🌟 만들기</button>
+          <button id="login-back" class="ghost" type="button">뒤로</button>
         </div>
-        <p class="note">같은 이름과 비밀번호로 다음에도 이어서 해요</p>
+        <p class="note">아이디는 친구와 겹치지 않아요. 같은 아이디와 비밀번호로 다음에도 이어서 해요</p>
+      </div>
+    </section>
+
+    <section id="profile" class="overlay">
+      <div class="card small">
+        <h2>내 정보</h2>
+        <p id="profile-id" class="status"></p>
+        <div class="form">
+          <input id="profile-name" type="text" maxlength="10" placeholder="이름 (선택)" autocomplete="off" />
+          <input id="profile-school" type="text" maxlength="20" placeholder="학교 (선택)" autocomplete="off" />
+        </div>
+        <p id="profile-msg" class="status"></p>
+        <button id="profile-save" class="big" type="button">저장</button>
+        <button id="profile-cancel" class="ghost" type="button">취소</button>
       </div>
     </section>
 
@@ -108,10 +130,11 @@
         <p class="eyebrow">듣고 · 찾고 · 쏘고</p>
         <h1>받아쓰기 <br />풍선 사격</h1>
         <div class="player">
-          <span id="player-name">👤</span>
+          <button id="player-name" type="button" title="내 정보">👤</button>
           <button id="fame-open" class="ghost" type="button">🏆 명예의 전당</button>
           <button id="logout" class="ghost" type="button">바꾸기</button>
         </div>
+        <button id="continue" class="big continue" type="button" hidden>▶ 이어하기</button>
         <button id="start" class="big" type="button">게임 시작</button>
         <p id="qstatus" class="status"></p>
         <p id="record" class="record"></p>
@@ -360,7 +383,7 @@
         background: rgb(29 43 83 / 0.28);
       }
       body[data-state='editor'] #editor, body[data-state='shop'] #shop, body[data-state='menu'] #menu, body[data-state='paused'] #paused,
-      body[data-state='result'] #result, body[data-state='login'] #login, body[data-state='fame'] #fame { display: grid; }
+      body[data-state='result'] #result, body[data-state='login'] #login, body[data-state='fame'] #fame, body[data-state='profile'] #profile { display: grid; }
       .card {
         margin: auto; width: min(100%, 440px); text-align: center;
         background: var(--cream); border: 4px solid var(--ink); border-radius: 30px;
@@ -450,13 +473,17 @@
       @keyframes shake { 25% { translate: -5px 0; } 50% { translate: 5px 0; } 75% { translate: -3px 0; } }
 
       /* ── 로그인 · 명예의 전당 ── */
-      #login-form { display: grid; gap: 10px; margin-top: 12px; }
-      #login-form input, #pad-type {
+      #login-form, .form { display: grid; gap: 10px; margin-top: 12px; }
+      #login-form .ghost { margin-top: 0; }
+      #login-form input, .form input, #pad-type {
         width: 100%; min-height: 54px; padding: 8px 14px; font: 22px 'Jua', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
         color: var(--ink); background: #fff; border: var(--edge); border-radius: 14px; text-align: center;
         user-select: text; -webkit-user-select: text;
       }
-      #login-form input:focus-visible, #pad-type:focus-visible { outline: 4px solid var(--sky); outline-offset: 2px; }
+      #login-form input:focus-visible, .form input:focus-visible, #pad-type:focus-visible { outline: 4px solid var(--sky); outline-offset: 2px; }
+      #new-msg, #profile-msg { color: var(--coral); margin-top: 8px; }
+      #new-msg:empty, #profile-msg:empty { display: none; }
+      .big.continue { background: var(--mint); color: var(--ink); margin-bottom: 10px; }
       #login-form .big { margin-top: 2px; }
       #login-msg:empty { display: none; }
       #login-msg { color: var(--coral); margin-top: 0; }
@@ -471,7 +498,7 @@
         font-size: 18px;
       }
       .player .ghost { margin-top: 0; padding: 6px 12px; min-height: 40px; font-size: 16px; }
-      #player-name { padding: 6px 12px; background: var(--sun); border: 2px solid var(--ink); border-radius: 999px; }
+      #player-name { padding: 6px 12px; font-size: 18px; background: var(--sun); border: 2px solid var(--ink); border-radius: 999px; }
       #fame-list { list-style: none; margin: 10px 0 14px; padding: 0; text-align: left; max-height: 40vh; overflow-y: auto; }
       #fame-list li {
         display: grid; grid-template-columns: auto 1fr auto; gap: 2px 10px; align-items: center;

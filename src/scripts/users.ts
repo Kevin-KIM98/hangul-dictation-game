@@ -9,7 +9,12 @@ export interface StorageLike {
 }
 
 export interface Account {
+  /** 로그인 아이디(기기 안에서 유일, 대소문자 구분 없음) */
+  id: string;
+  /** 이름(선택). 비우면 아이디를 보여 준다 */
   name: string;
+  /** 학교(선택) */
+  school: string;
   salt: string;
   hash: string;
   created: number;
@@ -19,7 +24,9 @@ export interface Account {
 
 /** 남에게 보여 주는 기록(자랑 카드·명예의 전당) */
 export interface PlayerRecord {
+  id: string;
   name: string;
+  school: string;
   crowns: number;
   best: number;
   bossBest: number;
@@ -36,7 +43,9 @@ export interface PlayerRecord {
 
 /** 우승자 명단의 한 줄 */
 export interface WinnerEntry extends Win {
+  id: string;
   name: string;
+  school: string;
   points: number;
   /** 1부터. 점수가 같으면 공동 순위 */
   rank: number;
@@ -47,7 +56,7 @@ export interface WinnerEntry extends Win {
 export const WINS_KEPT = 12;
 
 interface Store {
-  v: 1;
+  v: 2;
   current: string | null;
   accounts: Record<string, Account>;
 }
@@ -56,7 +65,10 @@ export const USERS_KEY = 'dictation.users.v1';
 export const FRIENDS_KEY = 'dictation.friends.v1';
 /** 계정이 생기기 전 버전의 저장(첫 계정이 이어받는다) */
 export const LEGACY_SAVE_KEY = 'dictation.save.v2';
+export const ID_MIN = 2;
+export const ID_MAX = 12;
 export const NAME_MAX = 10;
+export const SCHOOL_MAX = 20;
 export const PW_MIN = 2;
 export const PW_MAX = 20;
 
@@ -64,17 +76,49 @@ export function normalizeName(name: string): string {
   return name.replace(/\s+/g, ' ').trim();
 }
 
-export function nameKey(name: string): string {
-  return normalizeName(name).toLowerCase();
+export function normalizeId(id: string): string {
+  return id.replace(/\s+/g, '').trim();
 }
 
-/** 이름은 한글·영문·숫자 1~10자 */
+/** 아이디 비교용(대소문자 구분 없음) */
+export function idKey(id: string): string {
+  return normalizeId(id).toLowerCase();
+}
+
+/** 아이디는 한글·영문·숫자·_ 2~12자, 띄어쓰기 없음 */
+export function idError(id: string): string | null {
+  const n = normalizeId(id);
+  if (!n) return '아이디를 적어 주세요.';
+  if ([...n].length < ID_MIN) return `아이디는 ${ID_MIN}글자 이상이에요.`;
+  if ([...n].length > ID_MAX) return `아이디는 ${ID_MAX}자까지예요.`;
+  if (!/^[가-힣ㄱ-ㅎㅏ-ㅣA-Za-z0-9_]+$/.test(n)) return '아이디는 한글·영어·숫자로 적어요(띄어쓰기 없이).';
+  return null;
+}
+
+/** 이름(선택)은 한글·영문·숫자 10자까지 */
 export function nameError(name: string): string | null {
   const n = normalizeName(name);
-  if (!n) return '이름을 적어 주세요.';
+  if (!n) return null;
   if ([...n].length > NAME_MAX) return `이름은 ${NAME_MAX}자까지예요.`;
   if (!/^[가-힣ㄱ-ㅎㅏ-ㅣA-Za-z0-9 ]+$/.test(n)) return '이름은 한글·영어·숫자로 적어요.';
   return null;
+}
+
+export function schoolError(school: string): string | null {
+  const n = normalizeName(school);
+  if ([...n].length > SCHOOL_MAX) return `학교 이름은 ${SCHOOL_MAX}자까지예요.`;
+  return null;
+}
+
+/** 화면에 보여 줄 이름: 이름이 있으면 이름, 없으면 아이디 */
+export function displayName(a: { id: string; name: string }): string {
+  return a.name || a.id;
+}
+
+/** 이름이 같은 친구와 구별되게: "민수 (@minsu01) · 한글초" */
+export function fullName(a: { id: string; name: string; school?: string }): string {
+  const base = a.name ? `${a.name} (@${a.id})` : `@${a.id}`;
+  return a.school ? `${base} · ${a.school}` : base;
 }
 
 export function passwordError(pw: string): string | null {
@@ -93,9 +137,11 @@ function randomSalt(rnd: () => number = Math.random): string {
   return s;
 }
 
-export function recordOf(name: string, save: Save, updated: number): PlayerRecord {
+export function recordOf(who: { id: string; name: string; school: string }, save: Save, updated: number): PlayerRecord {
   return {
-    name,
+    id: who.id,
+    name: who.name,
+    school: who.school,
     crowns: save.crowns,
     best: save.best,
     bossBest: save.bossBest,
@@ -112,7 +158,7 @@ export function recordOf(name: string, save: Save, updated: number): PlayerRecor
 export function rankWinners(records: PlayerRecord[]): WinnerEntry[] {
   const all: WinnerEntry[] = [];
   for (const r of records) {
-    for (const w of r.wins) all.push({ ...w, name: r.name, friend: r.friend, points: winPoints(w), rank: 0, tied: false });
+    for (const w of r.wins) all.push({ ...w, id: r.id, name: r.name, school: r.school, friend: r.friend, points: winPoints(w), rank: 0, tied: false });
   }
   all.sort((a, b) => b.points - a.points || a.at - b.at);
   for (let i = 0; i < all.length; i++) {
@@ -148,15 +194,21 @@ export class Users {
   }
 
   private load(): Store {
-    const empty: Store = { v: 1, current: null, accounts: {} };
+    const empty: Store = { v: 2, current: null, accounts: {} };
     try {
       const raw = JSON.parse(this.storage.getItem(USERS_KEY) ?? 'null');
       if (!raw || typeof raw !== 'object' || typeof raw.accounts !== 'object' || !raw.accounts) return empty;
       const accounts: Record<string, Account> = {};
       for (const [key, a] of Object.entries(raw.accounts as Record<string, Partial<Account>>)) {
-        if (!a || typeof a.name !== 'string' || typeof a.hash !== 'string' || typeof a.salt !== 'string') continue;
-        accounts[key] = {
-          name: a.name,
+        if (!a || typeof a.hash !== 'string' || typeof a.salt !== 'string') continue;
+        // v1: 이름이 곧 아이디였다. 이름을 아이디로 옮기고 이름도 그대로 둔다
+        const legacy = typeof a.id !== 'string';
+        const id = legacy ? normalizeId(String(a.name ?? key)) : normalizeId(a.id as string);
+        if (idError(id)) continue;
+        accounts[idKey(id)] = {
+          id,
+          name: typeof a.name === 'string' ? normalizeName(a.name) : '',
+          school: typeof a.school === 'string' ? normalizeName(a.school) : '',
           salt: a.salt,
           hash: a.hash,
           created: typeof a.created === 'number' ? a.created : 0,
@@ -164,8 +216,9 @@ export class Users {
           save: reviveSave(a.save),
         };
       }
-      const current = typeof raw.current === 'string' && accounts[raw.current] ? raw.current : null;
-      return { v: 1, current, accounts };
+      const cur = typeof raw.current === 'string' ? idKey(raw.current) : null;
+      const current = cur && accounts[cur] ? cur : null;
+      return { v: 2, current, accounts };
     } catch {
       return empty;
     }
@@ -188,21 +241,32 @@ export class Users {
     return Object.values(this.store.accounts).sort((a, b) => b.updated - a.updated);
   }
 
-  has(name: string): boolean {
-    return nameKey(name) in this.store.accounts;
+  has(id: string): boolean {
+    return idKey(id) in this.store.accounts;
+  }
+
+  /** 쓰고 싶은 아이디가 이미 있으면 뒤에 숫자를 붙여 비어 있는 아이디를 찾아 준다 */
+  suggestId(wanted: string): string {
+    const base = normalizeId(wanted).slice(0, ID_MAX - 2) || '친구';
+    if (!this.has(base) && !idError(base)) return base;
+    for (let n = 2; n < 1000; n++) {
+      const cand = `${base}${n}`;
+      if (!this.has(cand)) return cand;
+    }
+    return `${base}${Date.now() % 10000}`;
   }
 
   current(): Account | null {
     return this.store.current ? (this.store.accounts[this.store.current] ?? null) : null;
   }
 
-  /** 새 학생 등록. 계정이 하나도 없었으면 이전 버전의 진행을 이어받는다 */
-  register(name: string, password: string): Account | { error: string } {
-    const err = nameError(name) ?? passwordError(password);
+  /** 새 학생 등록(아이디는 유일, 이름·학교는 선택). 계정이 하나도 없었으면 이전 버전의 진행을 이어받는다 */
+  register(id: string, password: string, profile: { name?: string; school?: string } = {}): Account | { error: string } {
+    const err = idError(id) ?? passwordError(password) ?? nameError(profile.name ?? '') ?? schoolError(profile.school ?? '');
     if (err) return { error: err };
-    const clean = normalizeName(name);
-    const key = nameKey(clean);
-    if (this.store.accounts[key]) return { error: '이미 있는 이름이에요. 비밀번호를 넣고 들어가요.' };
+    const clean = normalizeId(id);
+    const key = idKey(clean);
+    if (this.store.accounts[key]) return { error: `'${clean}'은(는) 이미 쓰는 아이디예요. 다른 아이디를 골라요.` };
     let save = newSave();
     if (this.count === 0) {
       try {
@@ -214,18 +278,27 @@ export class Users {
     }
     const salt = randomSalt(this.rnd);
     const t = this.now();
-    const account: Account = { name: clean, salt, hash: hashPassword(salt, password), created: t, updated: t, save };
+    const account: Account = {
+      id: clean,
+      name: normalizeName(profile.name ?? ''),
+      school: normalizeName(profile.school ?? ''),
+      salt,
+      hash: hashPassword(salt, password),
+      created: t,
+      updated: t,
+      save,
+    };
     this.store.accounts[key] = account;
     this.store.current = key;
     this.write();
     return account;
   }
 
-  /** 이름·비밀번호가 맞으면 그 학생으로 들어간다 */
-  login(name: string, password: string): Account | { error: string } {
-    const key = nameKey(name);
+  /** 아이디·비밀번호가 맞으면 그 학생으로 들어간다 */
+  login(id: string, password: string): Account | { error: string } {
+    const key = idKey(id);
     const account = this.store.accounts[key];
-    if (!account) return { error: '없는 이름이에요.' };
+    if (!account) return { error: '없는 아이디예요. 처음이면 [새로 만들기]를 눌러요.' };
     if (hashPassword(account.salt, password) !== account.hash) return { error: '비밀번호가 달라요.' };
     this.store.current = key;
     account.updated = this.now();
@@ -238,6 +311,19 @@ export class Users {
     this.write();
   }
 
+  /** 이름·학교(선택) 바꾸기 */
+  updateProfile(profile: { name: string; school: string }): string | null {
+    const a = this.current();
+    if (!a) return '먼저 들어와야 해요.';
+    const err = nameError(profile.name) ?? schoolError(profile.school);
+    if (err) return err;
+    a.name = normalizeName(profile.name);
+    a.school = normalizeName(profile.school);
+    a.updated = this.now();
+    this.write();
+    return null;
+  }
+
   /** 지금 학생의 진행을 저장 */
   persist(): void {
     const a = this.current();
@@ -248,9 +334,9 @@ export class Users {
 
   /** 명예의 전당: 이 기기의 학생들 + 링크로 받은 친구들 */
   records(): PlayerRecord[] {
-    const mine = this.list().map((a) => recordOf(a.name, a.save, a.updated));
-    const names = new Set(mine.map((r) => nameKey(r.name)));
-    const friends = loadFriends(this.storage).filter((f) => !names.has(nameKey(f.name)));
+    const mine = this.list().map((a) => recordOf(a, a.save, a.updated));
+    const ids = new Set(mine.map((r) => idKey(r.id)));
+    const friends = loadFriends(this.storage).filter((f) => !ids.has(idKey(f.id)));
     return rankRecords([...mine, ...friends]);
   }
 
@@ -285,22 +371,28 @@ export function decodeBrag(text: string): PlayerRecord | null {
   return decodeRecords(text)?.[0] ?? null;
 }
 
-type Packed = [string, number, number, number, string, number, number, number, number, [number, number, string, number, number][]];
+type Packed = [string, number, number, number, string, number, number, number, number, [number, number, string, number, number][], string, string];
 
 function pack(r: PlayerRecord): Packed {
   return [
     r.name, r.crowns, r.best, r.bossBest, r.bossGrade, r.bossClears, r.totalLaps, r.stickers, r.updated,
     r.wins.slice(-WINS_KEPT).map((w) => [w.nth, w.laps, w.grade, w.score, w.at]),
+    r.id, r.school,
   ];
 }
 
 function unpack(raw: unknown): PlayerRecord | null {
   if (!Array.isArray(raw) || raw.length < 9) return null;
-  const [name, crowns, best, bossBest, bossGrade, bossClears, totalLaps, stickers, updated, wins] = raw as Packed;
+  const [name, crowns, best, bossBest, bossGrade, bossClears, totalLaps, stickers, updated, wins, id, school] = raw as Packed;
+  // 예전 링크에는 아이디가 없었다: 이름을 아이디로 쓴다
+  const cleanId = normalizeId(typeof id === 'string' ? id : String(name ?? ''));
+  if (idError(cleanId)) return null;
   if (typeof name !== 'string' || nameError(name)) return null;
   const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0);
   return {
+    id: cleanId,
     name: normalizeName(name),
+    school: typeof school === 'string' && !schoolError(school) ? normalizeName(school) : '',
     crowns: num(crowns),
     best: num(best),
     bossBest: num(bossBest),
@@ -344,17 +436,28 @@ export function loadFriends(storage: StorageLike): PlayerRecord[] {
     const raw = JSON.parse(storage.getItem(FRIENDS_KEY) ?? 'null');
     if (!Array.isArray(raw)) return [];
     return raw
-      .filter((r) => r && typeof r.name === 'string')
-      .map((r) => ({ ...r, wins: Array.isArray(r.wins) ? r.wins.map(reviveWin).filter((w: Win | null): w is Win => !!w) : [], friend: true }) as PlayerRecord);
+      .filter((r) => r && (typeof r.id === 'string' || typeof r.name === 'string'))
+      .map(
+        (r) =>
+          ({
+            ...r,
+            id: normalizeId(typeof r.id === 'string' ? r.id : r.name),
+            name: typeof r.name === 'string' ? r.name : '',
+            school: typeof r.school === 'string' ? r.school : '',
+            wins: Array.isArray(r.wins) ? r.wins.map(reviveWin).filter((w: Win | null): w is Win => !!w) : [],
+            friend: true,
+          }) as PlayerRecord,
+      )
+      .filter((r) => !idError(r.id));
   } catch {
     return [];
   }
 }
 
-/** 친구의 기록을 저장(같은 이름이면 더 새 것만) */
+/** 친구의 기록을 저장(같은 아이디면 더 새 것만) */
 export function addFriend(storage: StorageLike, record: PlayerRecord): boolean {
   const list = loadFriends(storage);
-  const i = list.findIndex((f) => nameKey(f.name) === nameKey(record.name));
+  const i = list.findIndex((f) => idKey(f.id) === idKey(record.id));
   if (i >= 0 && list[i].updated >= record.updated) return false;
   if (i >= 0) list[i] = { ...record, friend: true };
   else list.push({ ...record, friend: true });
@@ -375,7 +478,7 @@ export function bestWin(wins: Win[]): Win | null {
 
 /** 자랑 글(메신저에 붙여 넣기용) */
 export function bragText(r: PlayerRecord, url: string): string {
-  const parts = [`🏆 ${r.name}의 받아쓰기 풍선 사격 기록!`];
+  const parts = [`🏆 ${fullName(r)}의 받아쓰기 풍선 사격 기록!`];
   parts.push(`👑 왕관 ${r.crowns} · ⭐ 최고 ${r.best}점`);
   const win = bestWin(r.wins);
   if (win) parts.push(`🏅 ${win.nth}회차 우승 · ${win.laps}바퀴 만에 ${win.grade}등급 · 우승 점수 ${winPoints(win)}점`);

@@ -5,17 +5,19 @@ import { distractorsFor } from './hangul.ts';
 import { loadQuestions, parseQuestions, resetQuestions, saveQuestions } from './questions.ts';
 import { sfx, speak, stopSpeaking, unlock } from './audio.ts';
 import {
-  applyQuestionSet, applyWarning, blankCount, bossPhase, bossTime, buy, difficulty, equip, finishBoss, finishLap, newSave, recordBadShot,
-  themeIndex, timeLimit, winPoints, ITEMS, MIN_WIN_LAPS, RECKLESS_LOCK_MS, STAGES, type Difficulty, type ItemKind, type Mode, type Save,
+  applyQuestionSet, applyWarning, blankCount, bossPhase, bossTime, buy, canResume, difficulty, equip, finishBoss, finishLap, newSave,
+  recordBadShot, themeIndex, timeLimit, winPoints, ITEMS, MIN_WIN_LAPS, RECKLESS_LOCK_MS, STAGES,
+  type Difficulty, type ItemKind, type LapSnapshot, type Mode, type Save,
 } from './campaign.ts';
 import {
-  Users, addFriend, decodeRecords, encodeRecords, fameOf, nameError, normalizeName, passwordError, recordOf, type PlayerRecord, type StorageLike,
+  Users, addFriend, decodeRecords, displayName, encodeRecords, fameOf, fullName, idError, nameError, normalizeId, passwordError, recordOf,
+  schoolError, type PlayerRecord, type StorageLike,
 } from './users.ts';
 import { Pad } from './pad.ts';
 import { BossView } from './boss.ts';
 import { drawBragCard, shareRecord } from './share.ts';
 
-type State = 'login' | 'menu' | 'playing' | 'boss' | 'between' | 'paused' | 'result' | 'editor' | 'shop' | 'fame';
+type State = 'login' | 'profile' | 'menu' | 'playing' | 'boss' | 'between' | 'paused' | 'result' | 'editor' | 'shop' | 'fame';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>('stage');
@@ -178,11 +180,45 @@ function paintMenu(): void {
   persist();
   const def = STAGES[save.stage];
   const me = users.current();
-  $('player-name').textContent = me ? `👤 ${me.name}` : '👤';
+  $('player-name').textContent = me ? `👤 ${displayName(me)}` : '👤';
+  $('player-name').title = me ? fullName(me) : '';
   const progress = def.mode === 'boss' ? `${def.emoji} ${def.name} 도전!` : `${def.emoji} ${def.name} ${save.lap + 1}바퀴째`;
   const boss = save.bossClears ? ` · 🐉 ${save.bossGrade}` : '';
   $('record').textContent = `${progress} · 🪙 ${save.coins}${save.crowns ? ` · 👑 ${save.crowns}` : ''}${boss}`;
-  $('start').textContent = def.mode === 'boss' ? '🐉 최종 시험 시작' : '게임 시작';
+  const resumable = canResume(save, questions.list.length);
+  if (!resumable) save.resume = null;
+  const cont = $('continue');
+  cont.hidden = !resumable;
+  if (resumable) cont.textContent = `▶ 이어하기 (${save.resume!.index + 1}번 문제부터 · ${save.resume!.score}점)`;
+  $('start').textContent = resumable ? '처음부터 다시' : def.mode === 'boss' ? '🐉 최종 시험 시작' : '게임 시작';
+}
+
+/** 문항을 하나 끝낼 때마다 바퀴 진행을 저장해 두어, 나중에 이어서 할 수 있게 한다 */
+function snapshotLap(): void {
+  const snap: LapSnapshot = {
+    setKey: save.setKey,
+    stage: save.stage,
+    lap: save.lap,
+    index: game.index + 1,
+    score: game.score,
+    results: game.results.map((r) => ({ ...r, wrong: r.wrong.slice() })),
+    earned: earned.slice(),
+    lapCoins,
+    lapWarnings,
+    savedAt: Date.now(),
+  };
+  save.resume = snap.index < questions.list.length ? snap : null;
+  persist();
+}
+
+/** 이어하기: 저장된 진행을 게임에 되살린다. 성공하면 true */
+function restoreLap(): boolean {
+  const snap = save.resume;
+  if (!snap || !canResume(save, questions.list.length) || !game.restore(snap)) return false;
+  earned = snap.earned.slice();
+  lapCoins = snap.lapCoins;
+  lapWarnings = snap.lapWarnings;
+  return true;
 }
 
 function addCoins(n: number): void {
@@ -277,10 +313,10 @@ function readQuestion(): void {
   speak(text, () => toast(`소리가 안 나와요. 눈으로 보고 기억해요:  ${text}`, 3000));
 }
 
-/** 한 바퀴(1번~마지막 문항) 시작. 단계·난이도·배경은 저장된 진행에 따라 정해진다 */
-function startGame(): void {
+/** 한 바퀴(1번~마지막 문항) 시작. 단계·난이도·배경은 저장된 진행에 따라 정해진다. resume 이면 하다 만 곳부터 */
+function startGame(resume = false): void {
   const def = STAGES[save.stage];
-  if (def.mode === 'boss') return void startBoss();
+  if (def.mode === 'boss') return void startBoss(resume);
   mode = def.mode;
   diff = difficulty(save.level, mode);
   game = new Game(questions.list, mode === 'blank' ? (n) => blankCount(n, save.level) : undefined);
@@ -289,13 +325,18 @@ function startGame(): void {
   lapWarnings = 0;
   badShots.length = 0;
   calmUntil = 0;
+  const resumed = resume && restoreLap();
+  if (!resumed) {
+    save.resume = null;
+    persist();
+  }
   const themeName = applyLook();
   stage.setDrift(diff.drift);
   stage.clearBalloons();
   setState('playing');
 
-  $('lap-title').textContent = `${def.emoji} ${def.name}`;
-  $('lap-sub').textContent = `${save.lap + 1}바퀴 · ${themeName} · 난이도 ${'★'.repeat(save.level)}`;
+  $('lap-title').textContent = resumed ? `▶ ${game.index + 2}번 문제부터 이어서` : `${def.emoji} ${def.name}`;
+  $('lap-sub').textContent = `${def.emoji} ${def.name} ${save.lap + 1}바퀴 · ${themeName} · 난이도 ${'★'.repeat(save.level)}`;
   $('lap-desc').textContent = def.desc;
   $('lap').classList.add('show');
   setTimeout(() => $('lap').classList.remove('show'), 2000);
@@ -440,7 +481,7 @@ function showClear(): void {
     extra = ` · 🐉🪙+${bonus}`;
   }
   $('clear-sticker').textContent = `스티커 선물 ${sticker}${extra}`;
-  persist();
+  snapshotLap();
   $('clear').classList.add('show');
   setTimeout(() => {
     $('clear').classList.remove('show');
@@ -459,6 +500,7 @@ function showResult(): void {
   const out = finishLap(save, game.wrongShots, game.score);
   lapCoins += out.total;
   save.stickers = [...new Set([...save.stickers, ...earned])];
+  save.resume = null;
   persist();
   const next = STAGES[save.stage];
 
@@ -533,12 +575,18 @@ function quake(): void {
 }
 
 /** 보스 등장: 손글씨 인식 엔진을 준비하는 동안 등장 연출을 보여 준다 */
-async function startBoss(): Promise<void> {
+async function startBoss(resume = false): Promise<void> {
   mode = 'boss';
   diff = difficulty(save.level, 'full');
   game = new Game(questions.list);
   earned = [];
   lapCoins = 0;
+  lapWarnings = 0;
+  const resumed = resume && restoreLap();
+  if (!resumed) {
+    save.resume = null;
+    persist();
+  }
   busy = true;
   releaseLock();
   const theme = stage.setTheme(BOSS_THEME);
@@ -546,10 +594,13 @@ async function startBoss(): Promise<void> {
   stage.setLoadout(save.equipped, gunSize());
   stage.setStickers(save.stickers);
   stage.clearBalloons();
-  bossMax = bossHp = questions.list.reduce((n, q) => n + new Round(q).targetCount, 0);
+  bossMax = questions.list.reduce((n, q) => n + new Round(q).targetCount, 0);
+  // 이어하기: 이미 되찾은 글자만큼 보스 체력이 깎여 있다
+  bossHp = bossMax - game.results.reduce((n, r) => n + new Round(r.text).targetCount, 0);
   setState('boss');
   boss.show(true);
   boss.setHp(bossHp, bossMax);
+  boss.setPhase(bossPhase(bossMax ? bossHp / bossMax : 1), true);
   board.replaceChildren();
   timeMax = timeLeft = 0;
   paintTimer();
@@ -764,12 +815,13 @@ function showBossResult(): void {
   const out = finishBoss(save, game.wrongShots, game.score);
   lapCoins += out.total;
   save.stickers = [...new Set([...save.stickers, ...earned])];
+  save.resume = null;
   persist();
   void import('./ocr.ts').then((m) => m.releaseHandwriting());
   setTimeout(() => boss.show(false), 1800);
 
   const win = out.win;
-  const rank = users.winners().find((w) => !w.friend && w.at === win.at && w.name === users.current()?.name);
+  const rank = users.winners().find((w) => !w.friend && w.at === win.at && w.id === users.current()?.id);
   $('result-title').textContent = `🏆 ${win.nth}회차 우승! ${out.grade}등급`;
   $('result-score').textContent = `🐉 글자 도둑 대왕 격파 · ${game.score}점${out.newBest ? ' · 🆕 최고 기록!' : ''}`;
   let message = win.laps === MIN_WIN_LAPS ? `⚡ ${win.laps}바퀴 만에 한 번에 우승했어요! ` : `${win.laps}바퀴 만에 우승했어요. `;
@@ -808,7 +860,8 @@ function showLogin(): void {
   $('login-form').hidden = false;
   $('login-new').hidden = true;
   $('login-msg').textContent = '';
-  $<HTMLInputElement>('login-name').value = '';
+  $('new-msg').textContent = '';
+  $<HTMLInputElement>('login-id').value = '';
   $<HTMLInputElement>('login-pw').value = '';
   const known = $('login-known');
   known.replaceChildren(
@@ -816,9 +869,10 @@ function showLogin(): void {
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'chip-btn';
-      b.textContent = `👤 ${a.name}`;
+      b.textContent = a.name ? `👤 ${a.name} (@${a.id})` : `👤 @${a.id}`;
+      b.title = fullName(a);
       b.addEventListener('click', () => {
-        $<HTMLInputElement>('login-name').value = a.name;
+        $<HTMLInputElement>('login-id').value = a.id;
         $('login-pw').focus();
       });
       return b;
@@ -827,46 +881,73 @@ function showLogin(): void {
 }
 
 /** 들어온 학생의 진행으로 바꾸고 메뉴로 */
-function enter(account: { name: string; save: Save }, fresh: boolean): void {
+function enter(account: { id: string; name: string; save: Save }, fresh: boolean): void {
   save = account.save;
   unlock();
   toMenu();
-  toast(fresh ? `🌟 ${account.name} 친구, 환영해요! 모험을 시작해요` : `👋 ${account.name} 친구, 어서 와요!`, 2600);
+  const who = displayName(account);
+  if (fresh) toast(`🌟 ${who} 친구, 환영해요! 아이디는 @${account.id}예요`, 3000);
+  else if (canResume(save, questions.list.length)) toast(`👋 ${who} 친구, 어서 와요! 하던 바퀴를 이어서 할 수 있어요`, 3000);
+  else toast(`👋 ${who} 친구, 어서 와요!`, 2600);
   if (bragArrived) {
     bragArrived = null;
     openFame();
   }
 }
 
+/** 새로 만들기 화면 열기: 적어 둔 아이디가 있으면 비어 있는 아이디를 제안한다 */
+function openCreate(): void {
+  const typed = $<HTMLInputElement>('login-id').value;
+  const idInput = $<HTMLInputElement>('new-id');
+  idInput.value = typed.trim() ? users.suggestId(typed) : '';
+  $<HTMLInputElement>('new-pw').value = $<HTMLInputElement>('login-pw').value;
+  $<HTMLInputElement>('new-name').value = '';
+  $<HTMLInputElement>('new-school').value = '';
+  $('new-msg').textContent = typed.trim() && users.has(typed) ? `'${normalizeId(typed)}'은(는) 이미 있어서 '${idInput.value}'을(를) 제안해요.` : '';
+  $('login-form').hidden = true;
+  $('login-new').hidden = false;
+  (idInput.value ? $('new-pw') : idInput).focus();
+}
+
 function bindLogin(): void {
-  const name = $<HTMLInputElement>('login-name');
+  const id = $<HTMLInputElement>('login-id');
   const pw = $<HTMLInputElement>('login-pw');
   const msg = $('login-msg');
   $('login-form').addEventListener('submit', (e) => {
     e.preventDefault();
-    const err = nameError(name.value) ?? passwordError(pw.value);
+    const err = idError(id.value) ?? passwordError(pw.value);
     if (err) return void (msg.textContent = err);
-    if (users.has(name.value)) {
-      const r = users.login(name.value, pw.value);
-      if ('error' in r) return void (msg.textContent = r.error);
-      return enter(r, false);
+    if (!users.has(id.value)) {
+      msg.textContent = '없는 아이디예요. 처음이면 아래 [새로 만들기]를 눌러요.';
+      return;
     }
-    msg.textContent = '';
-    $('login-new-name').textContent = normalizeName(name.value);
-    $('login-form').hidden = true;
-    $('login-new').hidden = false;
+    const r = users.login(id.value, pw.value);
+    if ('error' in r) return void (msg.textContent = r.error);
+    enter(r, false);
   });
+  $('login-first').addEventListener('click', openCreate);
   $('login-create').addEventListener('click', () => {
-    const r = users.register(name.value, pw.value);
+    const newId = $<HTMLInputElement>('new-id').value;
+    const newPw = $<HTMLInputElement>('new-pw').value;
+    const name = $<HTMLInputElement>('new-name').value;
+    const school = $<HTMLInputElement>('new-school').value;
+    const nmsg = $('new-msg');
+    if (users.has(newId)) {
+      const alt = users.suggestId(newId);
+      nmsg.textContent = `'${normalizeId(newId)}'은(는) 이미 쓰는 아이디예요. '${alt}'은(는) 어때요?`;
+      $<HTMLInputElement>('new-id').value = alt;
+      return;
+    }
+    const r = users.register(newId, newPw, { name, school });
+    if ('error' in r) return void (nmsg.textContent = r.error);
     $('login-form').hidden = false;
     $('login-new').hidden = true;
-    if ('error' in r) return void (msg.textContent = r.error);
     enter(r, true);
   });
   $('login-back').addEventListener('click', () => {
     $('login-form').hidden = false;
     $('login-new').hidden = true;
-    name.focus();
+    id.focus();
   });
   $('logout').addEventListener('click', () => {
     persist();
@@ -874,6 +955,28 @@ function bindLogin(): void {
     save = newSave();
     showLogin();
   });
+
+  // 내 정보(이름·학교 바꾸기)
+  $('player-name').addEventListener('click', openProfile);
+  $('profile-save').addEventListener('click', () => {
+    const name = $<HTMLInputElement>('profile-name').value;
+    const school = $<HTMLInputElement>('profile-school').value;
+    const err = users.updateProfile({ name, school });
+    if (err) return void ($('profile-msg').textContent = err);
+    toast('내 정보를 저장했어요', 1600);
+    toMenu();
+  });
+  $('profile-cancel').addEventListener('click', toMenu);
+}
+
+function openProfile(): void {
+  const me = users.current();
+  if (!me || state !== 'menu') return;
+  $('profile-id').textContent = `아이디 @${me.id}`;
+  $<HTMLInputElement>('profile-name').value = me.name;
+  $<HTMLInputElement>('profile-school').value = me.school;
+  $('profile-msg').textContent = '';
+  setState('profile');
 }
 
 // ───────── 명예의 전당 · 자랑하기 ─────────
@@ -900,7 +1003,7 @@ function renderFame(): void {
   $('winners-list').replaceChildren(
     ...winners.map((w) => {
       const li = document.createElement('li');
-      if (me && !w.friend && w.name === me.name) li.classList.add('me');
+      if (me && !w.friend && w.id === me.id) li.classList.add('me');
       if (w.rank === 1) li.classList.add('top');
       const rank = document.createElement('span');
       rank.className = 'f-rank';
@@ -908,14 +1011,14 @@ function renderFame(): void {
       if (w.tied) rank.textContent = `공동 ${rank.textContent}`;
       const name = document.createElement('span');
       name.className = 'f-name';
-      name.textContent = `${w.name}${w.friend ? ' 👫' : ''} · ${w.nth}회차 우승`;
+      name.textContent = `${displayName(w)}${w.friend ? ' 👫' : ''} · ${w.nth}회차 우승`;
       const pts = document.createElement('span');
       pts.className = 'f-fame';
       pts.textContent = `${w.points}점`;
       const detail = document.createElement('span');
       detail.className = 'f-detail';
       const speed = w.laps === MIN_WIN_LAPS ? `⚡ ${w.laps}바퀴 만에 한 번에!` : `${w.laps}바퀴 만에`;
-      detail.textContent = `${speed} · ${w.grade}등급 · 시험 ${w.score}점 · ${formatDate(w.at)}`;
+      detail.textContent = `@${w.id}${w.school ? ` · ${w.school}` : ''} · ${speed} · ${w.grade}등급 · 시험 ${w.score}점 · ${formatDate(w.at)}`;
       li.append(rank, name, pts, detail);
       return li;
     }),
@@ -923,20 +1026,20 @@ function renderFame(): void {
   $('fame-list').replaceChildren(
     ...users.records().map((r, i) => {
       const li = document.createElement('li');
-      if (me && !r.friend && r.name === me.name) li.classList.add('me');
+      if (me && !r.friend && r.id === me.id) li.classList.add('me');
       const rank = document.createElement('span');
       rank.className = 'f-rank';
       rank.textContent = medals[i] ?? `${i + 1}`;
       const name = document.createElement('span');
       name.className = 'f-name';
-      name.textContent = r.friend ? `${r.name} 👫` : r.name;
+      name.textContent = r.friend ? `${displayName(r)} 👫` : displayName(r);
       const fame = document.createElement('span');
       fame.className = 'f-fame';
       fame.textContent = `${fameOf(r)}점`;
       const detail = document.createElement('span');
       detail.className = 'f-detail';
       const bossText = r.bossClears ? `${r.bossGrade}등급 ${r.bossBest}점` : '도전 중';
-      detail.textContent = `👑 ${r.crowns} · ⭐ ${r.best} · 🐉 ${bossText}${r.friend ? ' · 링크로 받은 친구' : ''}`;
+      detail.textContent = `@${r.id}${r.school ? ` · ${r.school}` : ''} · 👑 ${r.crowns} · ⭐ ${r.best} · 🐉 ${bossText}${r.friend ? ' · 링크로 받은 친구' : ''}`;
       li.append(rank, name, fame, detail);
       return li;
     }),
@@ -946,7 +1049,7 @@ function renderFame(): void {
 async function shareMine(): Promise<void> {
   const me = users.current();
   if (!me) return;
-  const record = recordOf(me.name, save, Date.now());
+  const record = recordOf(me, save, Date.now());
   const canvas = $<HTMLCanvasElement>('share-card');
   drawBragCard(canvas, record);
   const box = $('share-box');
@@ -1022,7 +1125,7 @@ function receiveBrag(): void {
   bragArrived = records[0];
   toast(
     records.length === 1
-      ? `👫 ${records[0].name} 친구의 기록이 도착했어요! 명예의 전당에서 비교해 봐요`
+      ? `👫 ${displayName(records[0])} 친구의 기록이 도착했어요! 명예의 전당에서 비교해 봐요`
       : `🏆 친구 ${records.length}명의 우승 기록이 도착했어요! 명예의 전당을 열어요`,
     4000,
   );
@@ -1329,14 +1432,15 @@ function bindInput(): void {
     }
   });
 
-  const startFrom = (e: MouseEvent) => {
+  const startFrom = (e: MouseEvent, resume = false) => {
     unlock();
     const bossNext = STAGES[save.stage].mode === 'boss';
-    startGame();
+    startGame(resume);
     if (!bossNext && (e as PointerEvent).pointerType === 'mouse') requestLock();
   };
-  $('start').addEventListener('click', startFrom);
-  $('again').addEventListener('click', startFrom);
+  $('start').addEventListener('click', (e) => startFrom(e));
+  $('continue').addEventListener('click', (e) => startFrom(e, true));
+  $('again').addEventListener('click', (e) => startFrom(e));
   $('home').addEventListener('click', toMenu);
   $('shop-open').addEventListener('click', openShop);
   $('result-shop').addEventListener('click', openShop);
@@ -1439,6 +1543,7 @@ async function boot(): Promise<void> {
     get pad() { return pad; },
     get boss() { return { hp: bossHp, max: bossMax, busy, fallback: padFallback, timeLeft }; },
     get calm() { return performance.now() < calmUntil; },
+    startGame,
     shootAt(x: number, y: number) { shoot({ x, y }); },
     hitChar(ch: string) {
       const b = stage.balloons.find((x) => x.ch === ch);

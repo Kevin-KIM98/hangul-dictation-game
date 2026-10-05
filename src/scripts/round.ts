@@ -130,6 +130,20 @@ export class Game {
     return this.results.reduce((s, r) => s + r.stars, 0);
   }
 
+  /**
+   * 이어하기: 끝낸 문항 수·점수·결과를 되살린다. 다음 nextQuestion() 은 index 번 문항을 연다.
+   * 문항 수와 맞지 않으면 처음부터(false).
+   */
+  restore(snap: { index: number; score: number; results: QuestionResult[] }): boolean {
+    if (!Number.isInteger(snap.index) || snap.index < 0 || snap.index >= this.questions.length) return false;
+    if (snap.results.length !== snap.index) return false;
+    this.index = snap.index - 1;
+    this.score = Math.max(0, snap.score);
+    this.combo = 0;
+    this.results = snap.results.map((r) => ({ ...r, wrong: r.wrong.slice() }));
+    return true;
+  }
+
   /** 다음 문항으로. 더 없으면 false */
   nextQuestion(): boolean {
     this.index++;

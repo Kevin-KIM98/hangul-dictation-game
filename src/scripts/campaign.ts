@@ -1,4 +1,5 @@
 // 반복 학습 진행(바퀴·단계·난이도), 코인, 상점 — 화면과 무관한 순수 로직
+import type { QuestionResult } from './round.ts';
 
 export type Mode = 'full' | 'blank' | 'speed' | 'boss';
 
@@ -100,6 +101,55 @@ export interface Save {
   wins: Win[];
   /** 난사 경고를 받은 횟수(누적) */
   warnings: number;
+  /** 하다 만 바퀴(이어하기). 없으면 null */
+  resume: LapSnapshot | null;
+}
+
+/** 바퀴 도중의 진행: 문항을 하나 끝낼 때마다 저장한다 */
+export interface LapSnapshot {
+  /** 어느 문제 묶음·단계·바퀴의 진행인지 */
+  setKey: string;
+  stage: number;
+  lap: number;
+  /** 다음에 풀 문항 번호(0부터) = 끝낸 문항 수 */
+  index: number;
+  score: number;
+  results: QuestionResult[];
+  /** 이번 바퀴에서 받은 스티커·코인·경고 */
+  earned: string[];
+  lapCoins: number;
+  lapWarnings: number;
+  savedAt: number;
+}
+
+export function reviveSnapshot(raw: unknown): LapSnapshot | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Partial<LapSnapshot>;
+  const num = (v: unknown, d = 0) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+  if (typeof r.setKey !== 'string' || !Array.isArray(r.results)) return null;
+  const results = r.results
+    .filter((q): q is QuestionResult => !!q && typeof q === 'object' && typeof (q as QuestionResult).text === 'string')
+    .map((q) => ({ text: q.text, stars: num(q.stars, 1), misses: num(q.misses), wrong: Array.isArray(q.wrong) ? q.wrong.filter((w) => typeof w === 'string') : [] }));
+  const index = Math.floor(num(r.index));
+  if (index < 1 || results.length !== index) return null;
+  return {
+    setKey: r.setKey,
+    stage: Math.floor(num(r.stage)),
+    lap: Math.floor(num(r.lap)),
+    index,
+    score: Math.max(0, num(r.score)),
+    results,
+    earned: Array.isArray(r.earned) ? r.earned.filter((s) => typeof s === 'string') : [],
+    lapCoins: num(r.lapCoins),
+    lapWarnings: Math.floor(num(r.lapWarnings)),
+    savedAt: num(r.savedAt),
+  };
+}
+
+/** 저장된 이어하기가 지금 문제 묶음·단계·바퀴에 맞는지 */
+export function canResume(save: Save, questionCount: number): boolean {
+  const r = save.resume;
+  return !!r && r.setKey === save.setKey && r.stage === save.stage && r.lap === save.lap && r.index < questionCount;
 }
 
 export type Grade = 'S' | 'A' | 'B' | 'C';
@@ -137,6 +187,7 @@ export function newSave(): Save {
     runLaps: 0,
     wins: [],
     warnings: 0,
+    resume: null,
   };
 }
 
@@ -176,6 +227,7 @@ export function reviveSave(raw: unknown): Save {
     runLaps: Math.max(0, Math.floor(num(r.runLaps, 0))),
     wins: Array.isArray(r.wins) ? r.wins.map(reviveWin).filter((w): w is Win => !!w) : [],
     warnings: Math.max(0, Math.floor(num(r.warnings, 0))),
+    resume: reviveSnapshot(r.resume),
   };
   for (const kind of ['skin', 'stream', 'pop'] as const) {
     const id = r.equipped?.[kind];
@@ -200,6 +252,7 @@ export function applyQuestionSet(save: Save, questions: string[]): boolean {
   save.lap = 0;
   save.lastWrong = null;
   save.level = 2;
+  save.resume = null;
   return !first;
 }
 
