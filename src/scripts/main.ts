@@ -5,11 +5,11 @@ import { distractorsFor } from './hangul.ts';
 import { loadQuestions, parseQuestions, resetQuestions, saveQuestions } from './questions.ts';
 import { sfx, speak, stopSpeaking, unlock } from './audio.ts';
 import {
-  applyQuestionSet, blankCount, bossPhase, bossTime, buy, difficulty, equip, finishBoss, finishLap, newSave, themeIndex, timeLimit,
-  ITEMS, STAGES, type Difficulty, type ItemKind, type Mode, type Save,
+  applyQuestionSet, applyWarning, blankCount, bossPhase, bossTime, buy, difficulty, equip, finishBoss, finishLap, newSave, recordBadShot,
+  themeIndex, timeLimit, winPoints, ITEMS, MIN_WIN_LAPS, RECKLESS_LOCK_MS, STAGES, type Difficulty, type ItemKind, type Mode, type Save,
 } from './campaign.ts';
 import {
-  Users, addFriend, decodeBrag, fameOf, nameError, normalizeName, passwordError, recordOf, type PlayerRecord, type StorageLike,
+  Users, addFriend, decodeRecords, encodeRecords, fameOf, nameError, normalizeName, passwordError, recordOf, type PlayerRecord, type StorageLike,
 } from './users.ts';
 import { Pad } from './pad.ts';
 import { BossView } from './boss.ts';
@@ -82,6 +82,12 @@ let bossMax = 0;
 let busy = false; // 글자를 읽는 중·정답 연출 중에는 제출을 막는다
 let padFallback = false; // 손글씨 인식을 못 쓰면 키보드 입력
 let lastTick = 0;
+
+// 난사(아무 데나 쏘기) 관리
+const badShots: number[] = []; // 최근 빗나간·틀린 사격 시각
+let calmUntil = 0; // 이 시각까지 사격 잠금
+let lapWarnings = 0;
+let warnTimer = 0;
 
 const isLocked = () => document.pointerLockElement === canvas;
 
@@ -184,11 +190,16 @@ function addCoins(n: number): void {
   lapCoins += n;
 }
 
-/** 배경(바퀴마다 바뀜)과 꾸민 물총을 화면에 적용 */
+function gunSize(): number {
+  return ITEMS.find((i) => i.id === save.equipped.skin)?.size ?? 1;
+}
+
+/** 배경(바퀴마다 바뀜)과 꾸민 물총, 모은 스티커를 화면에 적용 */
 function applyLook(): string {
   const theme = stage.setTheme(themeIndex(save));
   document.body.style.background = theme.sky;
-  stage.setLoadout(save.equipped);
+  stage.setLoadout(save.equipped, gunSize());
+  stage.setStickers(save.stickers);
   return theme.name;
 }
 
@@ -275,6 +286,9 @@ function startGame(): void {
   game = new Game(questions.list, mode === 'blank' ? (n) => blankCount(n, save.level) : undefined);
   earned = [];
   lapCoins = 0;
+  lapWarnings = 0;
+  badShots.length = 0;
+  calmUntil = 0;
   const themeName = applyLook();
   stage.setDrift(diff.drift);
   stage.clearBalloons();
@@ -371,7 +385,37 @@ function onHit(b: Balloon): void {
     popup('앗!', at.x, at.y - 30, 'oops');
     updateHint();
     rereadSoon();
+    badShot();
   }
+  paintHud();
+}
+
+/** 빗나가거나 틀린 사격. 짧은 시간에 몰리면 경고하고 잠시 못 쏘게 한다 */
+function badShot(): void {
+  if (!recordBadShot(badShots, performance.now())) return;
+  lapWarnings++;
+  const lost = applyWarning(save);
+  persist();
+  calmUntil = performance.now() + RECKLESS_LOCK_MS;
+  clearTimeout(rereadTimer);
+  stopSpeaking();
+  sfx.attack();
+  navigator.vibrate?.([120, 60, 120]);
+  const warn = $('warn');
+  $('warn-sub').textContent = lost ? `🪙 -${lost} · 경고 ${save.warnings}번째` : `경고 ${save.warnings}번째 · 다음부터는 코인을 잃어요`;
+  warn.classList.add('show');
+  const tick = () => {
+    const left = Math.ceil((calmUntil - performance.now()) / 1000);
+    if (left <= 0 || state !== 'playing') {
+      warn.classList.remove('show');
+      if (state === 'playing') readQuestion();
+      return;
+    }
+    $('warn-count').textContent = `${left}초 뒤에 다시 쏠 수 있어요`;
+    warnTimer = window.setTimeout(tick, 250);
+  };
+  clearTimeout(warnTimer);
+  tick();
   paintHud();
 }
 
@@ -382,6 +426,7 @@ function showClear(): void {
   const fresh = STICKERS.filter((s) => !earned.includes(s));
   const sticker = fresh[Math.floor(Math.random() * fresh.length)] ?? STICKERS[0];
   earned.push(sticker);
+  stage.setStickers([...new Set([...save.stickers, ...earned])]);
   $('clear-text').textContent = res.text;
   $('clear-stars').textContent = '⭐'.repeat(res.stars);
   let extra = '';
@@ -431,6 +476,7 @@ function showResult(): void {
   else message = `${missed}문제에서 틀렸어요. 1번부터 다시! 하나도 안 틀리면 다음 단계가 열려요.`;
   if (out.levelChange > 0) message += ' (난이도 ⬆)';
   if (out.levelChange < 0) message += ' (조금 쉽게 해 줄게요)';
+  if (lapWarnings) message += ` ⚠️ 아무 데나 쏘기 경고 ${lapWarnings}번 — 잘 듣고 겨눠서 쏴요!`;
   $('result-stars').textContent = message;
 
   const rows = [{ label: '맞힌 글자·보너스', amount: lapCoins - out.total }, ...out.coins];
@@ -497,7 +543,8 @@ async function startBoss(): Promise<void> {
   releaseLock();
   const theme = stage.setTheme(BOSS_THEME);
   document.body.style.background = theme.sky;
-  stage.setLoadout(save.equipped);
+  stage.setLoadout(save.equipped, gunSize());
+  stage.setStickers(save.stickers);
   stage.clearBalloons();
   bossMax = bossHp = questions.list.reduce((n, q) => n + new Round(q).targetCount, 0);
   setState('boss');
@@ -721,11 +768,14 @@ function showBossResult(): void {
   void import('./ocr.ts').then((m) => m.releaseHandwriting());
   setTimeout(() => boss.show(false), 1800);
 
-  $('result-title').textContent = `🏆 최종 시험 통과! ${out.grade}등급`;
+  const win = out.win;
+  const rank = users.winners().find((w) => !w.friend && w.at === win.at && w.name === users.current()?.name);
+  $('result-title').textContent = `🏆 ${win.nth}회차 우승! ${out.grade}등급`;
   $('result-score').textContent = `🐉 글자 도둑 대왕 격파 · ${game.score}점${out.newBest ? ' · 🆕 최고 기록!' : ''}`;
-  let message = out.perfect
-    ? '한 글자도 안 틀렸어요! 왕관을 받고 명예의 전당에 올랐어요.'
-    : `${game.wrongShots}번 틀렸지만 끝까지 해냈어요! 왕관을 받고 명예의 전당에 올랐어요.`;
+  let message = win.laps === MIN_WIN_LAPS ? `⚡ ${win.laps}바퀴 만에 한 번에 우승했어요! ` : `${win.laps}바퀴 만에 우승했어요. `;
+  message += `우승 점수 ${winPoints(win)}점`;
+  if (rank) message += rank.tied ? ` · 명예의 전당 공동 ${rank.rank}위!` : ` · 명예의 전당 ${rank.rank}위!`;
+  message += out.perfect ? ' 한 글자도 안 틀렸어요!' : ` (${game.wrongShots}번 틀림)`;
   if (out.levelChange > 0) message += ' (난이도 ⬆)';
   if (out.levelChange < 0) message += ' (조금 쉽게 해 줄게요)';
   $('result-stars').textContent = message;
@@ -835,10 +885,41 @@ function openFame(): void {
   setState('fame');
 }
 
+function formatDate(at: number): string {
+  if (!at) return '';
+  const d = new Date(at);
+  return `${d.getFullYear()}.${d.getMonth() + 1}.${d.getDate()}`;
+}
+
 function renderFame(): void {
   const me = users.current();
   const medals = ['🥇', '🥈', '🥉'];
   $('fame-share').hidden = !me;
+  const winners = users.winners();
+  $('hall-share').hidden = !winners.length;
+  $('winners-list').replaceChildren(
+    ...winners.map((w) => {
+      const li = document.createElement('li');
+      if (me && !w.friend && w.name === me.name) li.classList.add('me');
+      if (w.rank === 1) li.classList.add('top');
+      const rank = document.createElement('span');
+      rank.className = 'f-rank';
+      rank.textContent = w.rank <= 3 ? medals[w.rank - 1] : `${w.rank}위`;
+      if (w.tied) rank.textContent = `공동 ${rank.textContent}`;
+      const name = document.createElement('span');
+      name.className = 'f-name';
+      name.textContent = `${w.name}${w.friend ? ' 👫' : ''} · ${w.nth}회차 우승`;
+      const pts = document.createElement('span');
+      pts.className = 'f-fame';
+      pts.textContent = `${w.points}점`;
+      const detail = document.createElement('span');
+      detail.className = 'f-detail';
+      const speed = w.laps === MIN_WIN_LAPS ? `⚡ ${w.laps}바퀴 만에 한 번에!` : `${w.laps}바퀴 만에`;
+      detail.textContent = `${speed} · ${w.grade}등급 · 시험 ${w.score}점 · ${formatDate(w.at)}`;
+      li.append(rank, name, pts, detail);
+      return li;
+    }),
+  );
   $('fame-list').replaceChildren(
     ...users.records().map((r, i) => {
       const li = document.createElement('li');
@@ -895,6 +976,26 @@ function bindFame(): void {
     void shareMine();
   });
   $('fame-share').addEventListener('click', () => void shareMine());
+  $('hall-share').addEventListener('click', async () => {
+    // 우승자가 있는 학생들의 기록을 한 링크에 담는다
+    const winners = users.records().filter((r) => r.wins.length);
+    const url = new URL(location.href);
+    url.search = '';
+    url.hash = `hall=${encodeRecords(winners)}`;
+    const text = `🏆 우리 명예의 전당! 우승자 ${winners.length}명 — 구경하기 👉 ${url.href}`;
+    const nav = navigator as Navigator & { canShare?: (d: ShareData) => boolean };
+    try {
+      if (typeof nav.share === 'function') await nav.share({ text });
+      else {
+        await navigator.clipboard.writeText(text);
+        toast('명예의 전당 링크를 복사했어요. 친구·선생님께 보내요!', 2600);
+      }
+    } catch {
+      $('share-box').hidden = false;
+      $<HTMLTextAreaElement>('share-text').value = text;
+      $('share-status').textContent = '아래 링크를 복사해서 보내요';
+    }
+  });
   $('share-copy').addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText($<HTMLTextAreaElement>('share-text').value);
@@ -910,21 +1011,35 @@ function bindFame(): void {
   });
 }
 
-/** 친구가 보낸 자랑 링크(#brag=…)를 받아 둔다 */
+/** 친구가 보낸 자랑 링크(#brag=…)나 명예의 전당 링크(#hall=…)를 받아 둔다 */
 function receiveBrag(): void {
-  const m = location.hash.match(/brag=([A-Za-z0-9_-]+)/);
+  const m = location.hash.match(/(brag|hall)=([A-Za-z0-9_-]+)/);
   if (!m) return;
   history.replaceState(null, '', location.pathname + location.search);
-  const record = decodeBrag(m[1]);
-  if (!record) return toast('자랑 링크를 읽을 수 없어요', 2600);
-  addFriend(storage, record);
-  bragArrived = record;
-  toast(`👫 ${record.name} 친구의 기록이 도착했어요! 명예의 전당에서 비교해 봐요`, 4000);
+  const records = decodeRecords(m[2]);
+  if (!records) return toast('링크를 읽을 수 없어요', 2600);
+  for (const r of records) addFriend(storage, r);
+  bragArrived = records[0];
+  toast(
+    records.length === 1
+      ? `👫 ${records[0].name} 친구의 기록이 도착했어요! 명예의 전당에서 비교해 봐요`
+      : `🏆 친구 ${records.length}명의 우승 기록이 도착했어요! 명예의 전당을 열어요`,
+    4000,
+  );
 }
 
 // ───────── 꾸미기 상점 ─────────
 
-const KIND_TITLE: Record<ItemKind, string> = { skin: '물총', stream: '물줄기', pop: '터지는 효과' };
+const KIND_TITLE: Record<ItemKind, string> = { skin: '물총 (크기가 달라요)', stream: '물줄기', pop: '터지는 효과' };
+
+function sizeLabel(size: number): string {
+  if (size <= 0.8) return '아주 작음';
+  if (size < 1) return '작음';
+  if (size === 1) return '보통';
+  if (size < 1.3) return '큼';
+  if (size < 1.6) return '아주 큼';
+  return '거대!';
+}
 
 function openShop(): void {
   if (state !== 'shop') shopBack = state;
@@ -946,16 +1061,21 @@ function renderShop(): void {
       const on = save.equipped[kind] === item.id;
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = `item${on ? ' on' : ''}${owned ? ' owned' : ''}`;
+      btn.className = `item${on ? ' on' : ''}${owned ? ' owned' : ''}${item.final ? ' final' : ''}${!owned && save.coins < item.price ? ' locked' : ''}`;
       const icon = document.createElement('span');
       icon.className = 'item-icon';
       icon.textContent = item.emoji;
+      if (item.size) icon.style.fontSize = `${Math.round(22 + item.size * 12)}px`;
       const name = document.createElement('span');
-      name.textContent = item.name;
+      name.className = 'item-name';
+      name.textContent = item.final ? `👑 ${item.name}` : item.name;
+      const desc = document.createElement('span');
+      desc.className = 'item-desc';
+      desc.textContent = item.kind === 'skin' && item.size ? `${sizeLabel(item.size)} · ${item.desc}` : item.desc;
       const tag = document.createElement('span');
       tag.className = 'item-tag';
       tag.textContent = on ? '사용 중' : owned ? '바꾸기' : `🪙 ${item.price}`;
-      btn.append(icon, name, tag);
+      btn.append(icon, name, desc, tag);
       btn.addEventListener('click', () => pickItem(item.id));
       grid.append(btn);
     }
@@ -972,7 +1092,7 @@ function pickItem(id: string): void {
     toast(`${item.emoji} ${item.name}을(를) 샀어요!`, 1800);
   } else return toast(`코인이 ${item.price - save.coins}개 더 필요해요. 받아쓰기로 모아요!`, 2200);
   persist();
-  stage.setLoadout(save.equipped);
+  stage.setLoadout(save.equipped, gunSize());
   // 고른 것을 바로 보여 준다: 한 발 쏘고 터뜨리기
   sfx.shoot();
   stage.fire({ x: 0, y: 0.25 }, 0);
@@ -1125,13 +1245,14 @@ function ndcOf(e: PointerEvent): { x: number; y: number } {
 function shoot(ndc: { x: number; y: number } | null): void {
   if (state !== 'playing') return;
   const now = performance.now();
+  if (now < calmUntil) return; // 경고 중에는 잠시 쉰다
   if (now - lastShot < FIRE_INTERVAL) return;
   lastShot = now;
   sfx.shoot();
   navigator.vibrate?.(18);
   const hit = stage.fire(ndc, ndc ? 1.35 : 1.15);
   marker(ndc ?? { x: 0, y: 0 }, !!hit);
-  if (!hit) return;
+  if (!hit) return badShot();
   // 물줄기가 날아가 닿는 순간에 터진다
   setTimeout(() => {
     if (state === 'playing' && (stage.balloons.includes(hit) || stage.bonus === hit)) onHit(hit);
@@ -1317,6 +1438,8 @@ async function boot(): Promise<void> {
     get users() { return users; },
     get pad() { return pad; },
     get boss() { return { hp: bossHp, max: bossMax, busy, fallback: padFallback, timeLeft }; },
+    get calm() { return performance.now() < calmUntil; },
+    shootAt(x: number, y: number) { shoot({ x, y }); },
     hitChar(ch: string) {
       const b = stage.balloons.find((x) => x.ch === ch);
       if (b && state === 'playing') onHit(b);

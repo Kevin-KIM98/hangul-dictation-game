@@ -101,19 +101,28 @@ function emojiTexture(emoji: string): THREE.CanvasTexture {
   return tex;
 }
 
-/** 풍선이 터질 때 효과: 입자 모양·개수·세기 */
-const POP_FX: Record<string, { emoji?: string; count: number; power: number; party?: boolean; size: number }> = {
+/** 풍선이 터질 때 효과: 입자 모양·개수·세기. ring 은 퍼지는 고리, fireworks 는 하늘에 덤으로 터지는 불꽃 수 */
+const POP_FX: Record<string, { emoji?: string; count: number; power: number; party?: boolean; size: number; ring?: boolean; fireworks?: number; shake?: number }> = {
   'pop.drop': { count: 1, power: 1, size: 0.36 },
   'pop.star': { emoji: '⭐', count: 0.8, power: 1.1, size: 0.75 },
   'pop.heart': { emoji: '💖', count: 0.8, power: 1.1, size: 0.75 },
+  'pop.flower': { emoji: '🌸', count: 1, power: 0.8, size: 0.7 },
   'pop.confetti': { count: 1.6, power: 1.3, party: true, size: 0.4 },
-  'pop.firework': { count: 2.3, power: 1.8, party: true, size: 0.44 },
+  'pop.firework': { count: 2.3, power: 1.8, party: true, size: 0.44, ring: true },
+  'pop.galaxy': { emoji: '✨', count: 2.4, power: 1.5, size: 0.8, ring: true, fireworks: 1 },
+  'pop.dragon': { emoji: '🔥', count: 3, power: 2.3, party: true, size: 0.85, ring: true, fireworks: 3, shake: 0.9 },
 };
-const STREAM_COLORS: Record<string, number> = {
-  'stream.water': 0xd4f1ff,
-  'stream.lemon': 0xfff27a,
-  'stream.berry': 0xffb3d1,
-}; // 물줄기가 날아갔다 사라지는 시간(초)
+/** 물줄기: 색·굵기, sparkle 은 날아가는 동안 반짝이가 흩어진다 */
+const STREAMS: Record<string, { color: number; width: number; rainbow?: boolean; sparkle?: boolean }> = {
+  'stream.water': { color: 0xd4f1ff, width: 1 },
+  'stream.lemon': { color: 0xfff27a, width: 1 },
+  'stream.berry': { color: 0xffb3d1, width: 1 },
+  'stream.mint': { color: 0x9ffcf0, width: 1.15 },
+  'stream.lava': { color: 0xff7a1a, width: 1.7 },
+  'stream.rainbow': { color: 0xffffff, width: 1.2, rainbow: true },
+  'stream.dragon': { color: 0xffffff, width: 2.1, rainbow: true, sparkle: true },
+};
+const MAX_STICKERS = 24;
 
 export class Stage {
   portrait = false;
@@ -151,7 +160,11 @@ export class Stage {
   private nightShow = false;
   private drift = 1;
   private popId = 'pop.drop';
-  private streamId = 'stream.water';
+  private stream = STREAMS['stream.water'];
+  private gunSize = 1;
+  private rings: THREE.Sprite[] = [];
+  private ringLife: number[] = [];
+  private stickers: { sprite: THREE.Sprite; base: THREE.Vector3; phase: number }[] = [];
   private pMat!: THREE.PointsMaterial;
   private pTextures = new Map<string, THREE.Texture>();
   private goldMat = new THREE.MeshStandardMaterial({ color: 0xffd23f, roughness: 0.2, metalness: 0.3, emissive: 0x8a5a00 });
@@ -205,6 +218,15 @@ export class Stage {
     this.splash.visible = false;
     this.gun.add(this.splash);
 
+    const ringMat = new THREE.SpriteMaterial({ map: haloTexture(), transparent: true, depthWrite: false, opacity: 0 });
+    for (let i = 0; i < 4; i++) {
+      const ring = new THREE.Sprite(ringMat.clone());
+      ring.visible = false;
+      this.scene.add(ring);
+      this.rings.push(ring);
+      this.ringLife.push(0);
+    }
+
     this.pPos.fill(-999);
     this.pGeo.setAttribute('position', new THREE.BufferAttribute(this.pPos, 3));
     this.pGeo.setAttribute('color', new THREE.BufferAttribute(this.pCol, 3));
@@ -234,8 +256,7 @@ export class Stage {
     this.pitchMax = this.portrait ? 0.6 : 0.46;
     this.basePitch = (this.pitchMin + this.pitchMax) / 2 + vHalf * 0.06;
     this.radius = this.portrait ? 0.88 : 1.25;
-    this.gun.scale.setScalar(this.portrait ? 0.38 : 0.5);
-    this.gunRest.set(this.portrait ? 0.16 : 0.34, -0.34, -0.8);
+    this.applyGunSize();
     this.gun.position.copy(this.gunRest);
     this.yaw = 0;
     this.pitch = this.basePitch;
@@ -259,10 +280,19 @@ export class Stage {
     this.drift = mult;
   }
 
-  /** 상점에서 고른 물총·물줄기·터지는 효과 */
-  setLoadout(l: { skin: string; stream: string; pop: string }): void {
+  private applyGunSize(): void {
+    this.gun.scale.setScalar((this.portrait ? 0.38 : 0.5) * this.gunSize);
+    // 큰 물총은 풍선을 가리지 않게 화면 모서리 바깥쪽으로 밀어 총구만 크게 보인다
+    const k = Math.max(0, this.gunSize - 1);
+    this.gunRest.set((this.portrait ? 0.16 : 0.34) + k * 0.3, -0.34 - k * 0.36, -0.8);
+  }
+
+  /** 상점에서 고른 물총(크기 배율 포함)·물줄기·터지는 효과 */
+  setLoadout(l: { skin: string; stream: string; pop: string }, gunSize = 1): void {
     this.gunModel.setSkin(l.skin);
-    this.streamId = l.stream;
+    this.gunSize = gunSize;
+    this.applyGunSize();
+    this.stream = STREAMS[l.stream] ?? STREAMS['stream.water'];
     this.popId = POP_FX[l.pop] ? l.pop : 'pop.drop';
     const fx = POP_FX[this.popId];
     const key = fx.emoji ? this.popId : 'pop.drop';
@@ -270,7 +300,44 @@ export class Stage {
     this.pMat.map = this.pTextures.get(key)!;
     this.pMat.size = fx.size;
     this.pMat.needsUpdate = true;
-    (this.beam.material as THREE.MeshBasicMaterial).color.set(STREAM_COLORS[l.stream] ?? 0xd4f1ff);
+    (this.beam.material as THREE.MeshBasicMaterial).color.set(this.stream.color);
+  }
+
+  /**
+   * 학생이 모은 스티커(동물 이모지)를 잔디밭 곳곳에 세워 둔다.
+   * 학생마다 모은 스티커가 달라서 배경이 달라 보인다.
+   */
+  setStickers(list: string[]): void {
+    for (const s of this.stickers) {
+      this.scene.remove(s.sprite);
+      s.sprite.material.map?.dispose();
+      s.sprite.material.dispose();
+    }
+    this.stickers = [];
+    const seen = [...new Set(list)].slice(0, MAX_STICKERS);
+    seen.forEach((emoji, i) => {
+      // 같은 스티커는 늘 같은 자리에(학생마다 익숙한 풍경이 되도록)
+      const h = [...emoji].reduce((n, c) => (n * 31 + c.codePointAt(0)!) % 9973, 7);
+      const yaw = ((i / Math.max(1, seen.length)) * 2 - 1) * 1.15 + ((h % 100) / 100 - 0.5) * 0.25;
+      const d = 5.5 + (h % 7) * 0.8;
+      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: emojiTexture(emoji), transparent: true, depthWrite: false }));
+      const size = 1.1 + (h % 5) * 0.12;
+      sprite.scale.set(size, size, 1);
+      const base = new THREE.Vector3(Math.sin(yaw) * d, size * 0.5 + 0.05, -Math.cos(yaw) * d);
+      sprite.position.copy(base);
+      this.scene.add(sprite);
+      this.stickers.push({ sprite, base, phase: h });
+    });
+  }
+
+  private ring(at: THREE.Vector3, color: number): void {
+    const i = this.ringLife.findIndex((l) => l <= 0);
+    if (i < 0) return;
+    const r = this.rings[i];
+    r.position.copy(at);
+    r.material.color.set(color);
+    r.visible = true;
+    this.ringLife[i] = 1;
   }
 
   /** 총이 화면의 이 위치를 겨누게 한다 */
@@ -378,6 +445,9 @@ export class Stage {
   pop(b: Balloon): void {
     const fx = POP_FX[this.popId];
     this.burst(b.group.position, fx.emoji ? 0xffffff : b.color, Math.round((b.bonus ? 60 : 26) * fx.count), (b.bonus ? 1.8 : 1) * fx.power, fx.party);
+    if (fx.ring) this.ring(b.group.position, fx.party ? 0xffffff : b.color);
+    if (fx.fireworks) this.celebrate(fx.fireworks);
+    if (fx.shake) this.shake(fx.shake);
     this.remove(b);
   }
 
@@ -498,7 +568,20 @@ export class Stage {
     );
     this.world.update(t);
     if (this.nightShow && Math.random() < dt * 0.3) this.celebrate(1);
-    if (this.streamId === 'stream.rainbow') (this.beam.material as THREE.MeshBasicMaterial).color.setHSL((t * 1.5) % 1, 0.9, 0.72);
+    if (this.stream.rainbow) (this.beam.material as THREE.MeshBasicMaterial).color.setHSL((t * 1.5) % 1, 0.9, 0.72);
+    for (let i = 0; i < this.rings.length; i++) {
+      if (this.ringLife[i] <= 0) continue;
+      this.ringLife[i] = Math.max(0, this.ringLife[i] - dt * 1.8);
+      const k = 1 - this.ringLife[i];
+      const r = this.rings[i];
+      r.scale.setScalar(this.radius * (1.5 + k * 7));
+      r.material.opacity = this.ringLife[i] * 0.9;
+      r.visible = this.ringLife[i] > 0;
+    }
+    for (const s of this.stickers) {
+      s.sprite.position.y = s.base.y + Math.sin(t * 1.6 + s.phase) * 0.06;
+      s.sprite.material.rotation = Math.sin(t * 1.1 + s.phase) * 0.08;
+    }
 
     while (this.fireworks.length && this.fireworks[0].at <= t) {
       const f = this.fireworks.shift()!;
@@ -567,8 +650,11 @@ export class Stage {
         const to = muzzle.clone().lerp(this.shotEnd, head);
         this.beam.position.copy(from).lerp(to, 0.5);
         this.beam.lookAt(to);
-        this.beam.scale.set(1, 1, Math.max(from.distanceTo(to), 0.01));
+        const w = this.stream.width * (0.8 + 0.2 * this.gunSize);
+        this.beam.scale.set(w, w, Math.max(from.distanceTo(to), 0.01));
         this.beam.visible = true;
+        // 용의 숨결: 물줄기를 따라 반짝이가 흩날린다
+        if (this.stream.sparkle) this.burst(from.clone().lerp(to, Math.random()), 0xffffff, 2, 0.5, true);
       }
     }
     if (this.splashLife > 0) {

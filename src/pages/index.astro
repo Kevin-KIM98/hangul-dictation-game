@@ -42,6 +42,13 @@
       <p id="lap-desc"></p>
     </div>
 
+    <div id="warn" class="banner">
+      <p id="warn-title">🚫 아무 데나 쏘지 말아요!</p>
+      <p id="warn-desc">문제를 잘 듣고, 글자를 찾아서 겨눈 뒤 쏴요</p>
+      <p id="warn-count"></p>
+      <p id="warn-sub"></p>
+    </div>
+
     <div id="clear" class="banner">
       <p id="clear-stars"></p>
       <p id="clear-text"></p>
@@ -180,9 +187,14 @@
     <section id="fame" class="overlay">
       <div class="card wide">
         <h2>🏆 명예의 전당</h2>
-        <p id="fame-sub" class="status">이 기기에서 함께 노는 친구들의 기록이에요. 링크로 받은 친구 기록도 같이 나와요.</p>
+        <h3 class="fame-h">👑 우승자 명단</h3>
+        <p class="status fame-note">최종 시험을 통과한 모든 우승이 올라와요. 적은 바퀴로 빨리 우승할수록 우승 점수가 높고, 점수가 같으면 공동 순위예요.</p>
+        <ol id="winners-list" class="winners"></ol>
+        <h3 class="fame-h">👥 모든 친구</h3>
+        <p class="status fame-note">이 기기에서 함께 노는 친구들과 링크로 받은 친구들의 명예 점수예요.</p>
         <ol id="fame-list"></ol>
         <button id="fame-share" class="big" type="button">📣 내 기록 자랑하기</button>
+        <button id="hall-share" class="ghost strong" type="button">🔗 명예의 전당 전체 보내기</button>
         <div id="share-box" hidden>
           <canvas id="share-card"></canvas>
           <p id="share-status" class="status"></p>
@@ -278,13 +290,19 @@
       #result-coins b { font-weight: 400; color: #b0620a; white-space: nowrap; }
       #result-total { margin: 4px 0 10px; font-size: 20px; color: #b0620a; }
       #shop-list h3 { margin: 12px 0 6px; font-weight: 400; font-size: 20px; text-align: left; }
-      .shop-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
+      .shop-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; }
       .item {
         display: grid; gap: 2px; justify-items: center; padding: 8px 4px; font-size: 15px;
         background: #fff; border: var(--edge); border-radius: 14px; opacity: 0.85;
       }
-      .item-icon { font-size: 30px; line-height: 1.1; }
+      .item-icon { font-size: 30px; line-height: 1.1; height: 46px; display: grid; place-items: center; }
+      .item-name { font-size: 15px; }
+      .item-desc { font-size: 12px; color: #5a6a92; line-height: 1.2; }
       .item-tag { font-size: 14px; color: #b0620a; }
+      .item.locked { opacity: 0.55; }
+      .item.final { background: linear-gradient(160deg, #fff3bf, #ffe8cc 60%, #e5dbff); border-color: #b0620a; grid-column: span 2; }
+      .item.final .item-icon { font-size: 44px; filter: drop-shadow(0 0 8px #ffd43b); animation: bob 1.6s ease-in-out infinite; }
+      .item.final.on { background: linear-gradient(160deg, #ffd43b, #ff922b); }
       .item.owned { opacity: 1; }
       .item.owned .item-tag { color: #5a6a92; }
       .item.on { background: var(--sun); box-shadow: 0 3px 0 var(--ink); }
@@ -460,11 +478,28 @@
         padding: 8px 12px; margin-bottom: 6px; background: #fff; border-radius: 12px; font-size: 18px;
       }
       #fame-list li.me { background: var(--sun); border: 2px solid var(--ink); }
-      #fame-list .f-rank { font-size: 24px; min-width: 34px; text-align: center; }
-      #fame-list .f-name { font-size: 20px; }
-      #fame-list .f-fame { color: #b0620a; white-space: nowrap; }
-      #fame-list .f-detail { grid-column: 2 / -1; font-size: 15px; color: #5a6a92; }
+      #fame .f-rank { font-size: 24px; min-width: 34px; text-align: center; }
+      #fame .f-name { font-size: 20px; }
+      #fame .f-fame { color: #b0620a; white-space: nowrap; }
+      #fame .f-detail { grid-column: 2 / -1; font-size: 15px; color: #5a6a92; }
       #fame-list:empty::before { content: '아직 기록이 없어요. 게임을 해 봐요!'; display: block; text-align: center; padding: 14px; color: #5a6a92; }
+      .fame-h { margin: 14px 0 2px; font-weight: 400; font-size: 22px; text-align: left; }
+      .fame-note { margin: 0 0 8px; font-size: 14px; color: #5a6a92; text-align: left; }
+      #winners-list { list-style: none; margin: 0 0 6px; padding: 0; text-align: left; max-height: 36vh; overflow-y: auto; }
+      #winners-list li {
+        display: grid; grid-template-columns: auto 1fr auto; gap: 2px 10px; align-items: center;
+        padding: 8px 12px; margin-bottom: 6px; background: #fff; border-radius: 12px; font-size: 18px;
+      }
+      #winners-list li.top { background: linear-gradient(90deg, #fff3bf, #fff); border: 2px solid var(--sun); }
+      #winners-list li.me { outline: 3px solid var(--coral); }
+      #winners-list .f-rank { font-size: 16px; white-space: nowrap; }
+      #winners-list:empty::before { content: '아직 우승자가 없어요. 최종 시험을 통과해 이름을 올려요!'; display: block; text-align: center; padding: 14px; color: #5a6a92; }
+      #warn { z-index: 8; border-color: var(--coral); box-shadow: 0 8px 0 var(--coral); }
+      #warn-title { font-size: clamp(26px, 6vmin, 40px); color: var(--coral); }
+      #warn-desc { font-size: clamp(16px, 3.8vmin, 22px); margin-top: 4px; }
+      #warn-count { font-size: clamp(18px, 4.4vmin, 26px); margin-top: 8px; }
+      #warn-sub { font-size: 15px; color: #b0620a; margin-top: 4px; }
+      #warn.show { animation: shake 0.4s; }
       #share-box { margin-top: 12px; }
       #share-card { display: block; width: 100%; height: auto; border: var(--edge); border-radius: 14px; background: #fff; }
       #share-text {

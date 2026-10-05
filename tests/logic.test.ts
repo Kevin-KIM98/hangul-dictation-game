@@ -3,7 +3,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { compose, decompose, distractorsFor, similar } from '../src/scripts/hangul.ts';
 import { Game, Round } from '../src/scripts/round.ts';
-import { BOSS_STAGE, STAGES, applyQuestionSet, bossPhase, bossTime, buy, difficulty, equip, finishBoss, finishLap, gradeOf, newSave, reviveSave } from '../src/scripts/campaign.ts';
+import {
+  BOSS_STAGE, ITEMS, MIN_WIN_LAPS, RECKLESS_SHOTS, STAGES, applyQuestionSet, applyWarning, bossPhase, bossTime, buy, difficulty, equip, finishBoss, finishLap,
+  gradeOf, newSave, recordBadShot, reviveSave, winPoints,
+} from '../src/scripts/campaign.ts';
 
 test('음절 분해·조합', () => {
   assert.deepEqual(decompose('갑'), [0, 0, 17]);
@@ -118,13 +121,19 @@ test('최종 시험: 등급·왕관·기록, 끝나면 처음 단계로', () => 
   const s = newSave();
   s.stage = BOSS_STAGE;
   s.lap = 2;
-  const a = finishBoss(s, 0, 300);
+  s.runLaps = 3;
+  const a = finishBoss(s, 0, 300, 77);
   assert.deepEqual([a.grade, a.perfect, a.newBest], ['S', true, true]);
   assert.deepEqual([s.stage, s.lap, s.crowns, s.bossBest, s.bossGrade, s.bossClears, s.level], [0, 0, 1, 300, 'S', 1, 3]);
   assert.ok(a.coins.some((c) => c.label.includes('왕관')));
+  assert.deepEqual(a.win, { nth: 1, laps: 4, grade: 'S', score: 300, at: 77 });
+  assert.ok(a.coins.some((c) => c.label.includes('한 번에')));
+  assert.deepEqual([s.runLaps, s.wins.length], [0, 1]);
   s.stage = BOSS_STAGE;
+  s.runLaps = 7;
   const b = finishBoss(s, 4, 200);
   assert.deepEqual([b.grade, b.newBest, s.bossBest, s.bossGrade, s.crowns], ['B', false, 300, 'S', 2]);
+  assert.deepEqual([b.win.nth, b.win.laps], [2, 8]);
   assert.ok(b.total < a.total);
   assert.deepEqual([gradeOf(1), gradeOf(2), gradeOf(3), gradeOf(9)], ['A', 'A', 'B', 'C']);
 });
@@ -160,11 +169,52 @@ test('문제가 바뀌면 진행만 처음으로, 코인은 유지', () => {
 test('상점: 코인이 모자라면 못 사고, 사면 바로 장착', () => {
   const s = newSave();
   assert.equal(buy(s, 'skin.ocean'), false);
-  s.coins = 50;
+  s.coins = 250;
   assert.ok(buy(s, 'skin.ocean'));
-  assert.deepEqual([s.coins, s.equipped.skin], [10, 'skin.ocean']);
+  assert.deepEqual([s.coins, s.equipped.skin], [50, 'skin.ocean']);
   assert.equal(buy(s, 'skin.ocean'), false);
   assert.ok(equip(s, 'skin.basic'));
   assert.equal(equip(s, 'skin.gold'), false);
   assert.equal(reviveSave({ coins: 'x', equipped: { skin: 'skin.gold' } }).equipped.skin, 'skin.basic');
+});
+
+test('우승 점수: 바퀴 수가 적으면 등급·점수가 낮아도 더 높다', () => {
+  const fast = winPoints({ laps: MIN_WIN_LAPS, grade: 'C', score: 100 });
+  const slow = winPoints({ laps: MIN_WIN_LAPS + 1, grade: 'S', score: 5000 });
+  assert.ok(fast > slow);
+  assert.ok(winPoints({ laps: 4, grade: 'S', score: 100 }) > winPoints({ laps: 4, grade: 'A', score: 1990 }));
+  assert.ok(winPoints({ laps: 30, grade: 'C', score: 0 }) >= 500);
+});
+
+test('바퀴를 돌 때마다 runLaps 가 쌓인다', () => {
+  const s = newSave();
+  finishLap(s, 3, 10);
+  finishLap(s, 0, 10);
+  assert.equal(s.runLaps, 2);
+  assert.ok(reviveSave({ wins: [{ nth: 1, laps: 4, grade: 'S', score: 1, at: 1 }, { grade: 'Z' }] }).wins.length === 1);
+});
+
+test('난사 경고: 짧은 시간에 빗나간 사격이 많으면 경고, 두 번째부터 코인을 잃는다', () => {
+  const log: number[] = [];
+  for (let i = 0; i < RECKLESS_SHOTS - 1; i++) assert.equal(recordBadShot(log, i * 100), false);
+  assert.equal(recordBadShot(log, 600), true);
+  assert.equal(log.length, 0);
+  // 띄엄띄엄 쏘면 경고가 아니다
+  for (let i = 0; i < 10; i++) assert.equal(recordBadShot(log, i * 2000), false);
+  const s = newSave();
+  s.coins = 3;
+  assert.equal(applyWarning(s), 0);
+  assert.equal(applyWarning(s), 3);
+  assert.deepEqual([s.warnings, s.coins], [2, 0]);
+});
+
+test('상점: 최종 무기는 가장 비싸고, 물총 크기가 다양하다', () => {
+  for (const kind of ['skin', 'stream', 'pop'] as const) {
+    const items = ITEMS.filter((i) => i.kind === kind);
+    const final = items.find((i) => i.final)!;
+    assert.ok(final && items.every((i) => i.price <= final.price));
+  }
+  const sizes = new Set(ITEMS.filter((i) => i.kind === 'skin').map((i) => i.size));
+  assert.ok(sizes.size >= 5);
+  assert.ok(new Set(ITEMS.map((i) => i.id)).size === ITEMS.length);
 });

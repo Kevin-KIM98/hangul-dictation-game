@@ -32,24 +32,40 @@ export interface Item {
   name: string;
   emoji: string;
   price: number;
+  /** 물총 크기 배율(skin) */
+  size?: number;
+  /** 한 줄 설명(상점) */
+  desc: string;
+  /** 가장 비싸고 멋진 마지막 장비 */
+  final?: boolean;
 }
 
 export const ITEMS: Item[] = [
-  { id: 'skin.basic', kind: 'skin', name: '기본 물총', emoji: '🔫', price: 0 },
-  { id: 'skin.ocean', kind: 'skin', name: '바다 물총', emoji: '🌊', price: 40 },
-  { id: 'skin.berry', kind: 'skin', name: '딸기 물총', emoji: '🍓', price: 60 },
-  { id: 'skin.galaxy', kind: 'skin', name: '우주 물총', emoji: '🪐', price: 120 },
-  { id: 'skin.gold', kind: 'skin', name: '황금 물총', emoji: '🏅', price: 200 },
-  { id: 'skin.rainbow', kind: 'skin', name: '무지개 물총', emoji: '🌈', price: 300 },
-  { id: 'stream.water', kind: 'stream', name: '맑은 물', emoji: '💧', price: 0 },
-  { id: 'stream.lemon', kind: 'stream', name: '레몬 주스', emoji: '🍋', price: 30 },
-  { id: 'stream.berry', kind: 'stream', name: '딸기 우유', emoji: '🥤', price: 30 },
-  { id: 'stream.rainbow', kind: 'stream', name: '무지개 물줄기', emoji: '🌈', price: 120 },
-  { id: 'pop.drop', kind: 'pop', name: '물방울', emoji: '💦', price: 0 },
-  { id: 'pop.star', kind: 'pop', name: '별 팡팡', emoji: '⭐', price: 50 },
-  { id: 'pop.heart', kind: 'pop', name: '하트 팡팡', emoji: '💖', price: 50 },
-  { id: 'pop.confetti', kind: 'pop', name: '색종이', emoji: '🎊', price: 100 },
-  { id: 'pop.firework', kind: 'pop', name: '왕폭죽', emoji: '🎆', price: 200 },
+  { id: 'skin.basic', kind: 'skin', name: '기본 물총', emoji: '🔫', price: 0, size: 1, desc: '보통 크기' },
+  { id: 'skin.mini', kind: 'skin', name: '꼬마 물총', emoji: '🧃', price: 120, size: 0.7, desc: '작고 귀여워요' },
+  { id: 'skin.ocean', kind: 'skin', name: '바다 물총', emoji: '🌊', price: 200, size: 1, desc: '파란 바다색' },
+  { id: 'skin.berry', kind: 'skin', name: '딸기 물총', emoji: '🍓', price: 260, size: 1, desc: '분홍 딸기색' },
+  { id: 'skin.forest', kind: 'skin', name: '숲속 물총', emoji: '🌲', price: 340, size: 1.1, desc: '조금 커요' },
+  { id: 'skin.galaxy', kind: 'skin', name: '우주 물총', emoji: '🪐', price: 520, size: 1.15, desc: '보라빛 우주' },
+  { id: 'skin.gold', kind: 'skin', name: '황금 물총', emoji: '🏅', price: 800, size: 1.2, desc: '반짝이는 금속' },
+  { id: 'skin.rainbow', kind: 'skin', name: '무지개 물총', emoji: '🌈', price: 1200, size: 1.3, desc: '색이 계속 바뀌어요' },
+  { id: 'skin.cannon', kind: 'skin', name: '왕대포 물총', emoji: '💣', price: 1700, size: 1.6, desc: '아주 커요!' },
+  { id: 'skin.dragon', kind: 'skin', name: '전설의 용 물총', emoji: '🐲', price: 3000, size: 1.85, desc: '가장 크고 빛나요', final: true },
+  { id: 'stream.water', kind: 'stream', name: '맑은 물', emoji: '💧', price: 0, desc: '기본 물줄기' },
+  { id: 'stream.lemon', kind: 'stream', name: '레몬 주스', emoji: '🍋', price: 150, desc: '노란 물줄기' },
+  { id: 'stream.berry', kind: 'stream', name: '딸기 우유', emoji: '🥤', price: 150, desc: '분홍 물줄기' },
+  { id: 'stream.mint', kind: 'stream', name: '민트 소다', emoji: '🧊', price: 240, desc: '시원한 민트색' },
+  { id: 'stream.lava', kind: 'stream', name: '용암 물줄기', emoji: '🔥', price: 520, desc: '굵고 뜨거워요' },
+  { id: 'stream.rainbow', kind: 'stream', name: '무지개 물줄기', emoji: '🌈', price: 760, desc: '색이 바뀌어요' },
+  { id: 'stream.dragon', kind: 'stream', name: '용의 숨결', emoji: '🐉', price: 2000, desc: '반짝이가 날려요', final: true },
+  { id: 'pop.drop', kind: 'pop', name: '물방울', emoji: '💦', price: 0, desc: '기본 효과' },
+  { id: 'pop.star', kind: 'pop', name: '별 팡팡', emoji: '⭐', price: 200, desc: '별이 튀어요' },
+  { id: 'pop.heart', kind: 'pop', name: '하트 팡팡', emoji: '💖', price: 200, desc: '하트가 튀어요' },
+  { id: 'pop.flower', kind: 'pop', name: '꽃잎 팡팡', emoji: '🌸', price: 420, desc: '꽃잎이 흩날려요' },
+  { id: 'pop.confetti', kind: 'pop', name: '색종이', emoji: '🎊', price: 420, desc: '알록달록 색종이' },
+  { id: 'pop.firework', kind: 'pop', name: '왕폭죽', emoji: '🎆', price: 850, desc: '크게 터져요' },
+  { id: 'pop.galaxy', kind: 'pop', name: '은하수', emoji: '✨', price: 1300, desc: '별빛이 쏟아져요' },
+  { id: 'pop.dragon', kind: 'pop', name: '용의 불꽃', emoji: '🐲', price: 2500, desc: '불꽃 고리 + 불꽃놀이', final: true },
 ];
 
 export interface Loadout {
@@ -78,10 +94,28 @@ export interface Save {
   bossBest: number;
   bossClears: number;
   bossGrade: Grade | '';
+  /** 지난 우승(또는 처음) 뒤로 돈 바퀴 수 */
+  runLaps: number;
+  /** 우승 기록(최종 시험 통과마다 하나) */
+  wins: Win[];
+  /** 난사 경고를 받은 횟수(누적) */
+  warnings: number;
 }
 
 export type Grade = 'S' | 'A' | 'B' | 'C';
 export const GRADES: Grade[] = ['S', 'A', 'B', 'C'];
+
+export interface Win {
+  /** 이 학생의 몇 번째 우승인지 */
+  nth: number;
+  /** 우승까지 돈 바퀴 수(최종 시험 포함, 최소 4) */
+  laps: number;
+  grade: Grade;
+  /** 최종 시험 점수 */
+  score: number;
+  /** 우승 시각 */
+  at: number;
+}
 
 export function newSave(): Save {
   return {
@@ -100,7 +134,19 @@ export function newSave(): Save {
     bossBest: 0,
     bossClears: 0,
     bossGrade: '',
+    runLaps: 0,
+    wins: [],
+    warnings: 0,
   };
+}
+
+/** 저장된 우승 기록을 안전하게 읽는다 */
+export function reviveWin(raw: unknown): Win | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Partial<Win>;
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0);
+  if (!GRADES.includes(r.grade as Grade)) return null;
+  return { nth: num(r.nth), laps: Math.max(1, num(r.laps)), grade: r.grade as Grade, score: num(r.score), at: num(r.at) };
 }
 
 /** 저장된 값이 깨졌거나 옛 버전이어도 안전하게 읽는다 */
@@ -127,6 +173,9 @@ export function reviveSave(raw: unknown): Save {
     bossBest: Math.max(0, num(r.bossBest, 0)),
     bossClears: Math.max(0, Math.floor(num(r.bossClears, 0))),
     bossGrade: GRADES.includes(r.bossGrade as Grade) ? (r.bossGrade as Grade) : '',
+    runLaps: Math.max(0, Math.floor(num(r.runLaps, 0))),
+    wins: Array.isArray(r.wins) ? r.wins.map(reviveWin).filter((w): w is Win => !!w) : [],
+    warnings: Math.max(0, Math.floor(num(r.warnings, 0))),
   };
   for (const kind of ['skin', 'stream', 'pop'] as const) {
     const id = r.equipped?.[kind];
@@ -225,6 +274,7 @@ export function finishLap(save: Save, wrongShots: number, score: number): LapOut
   const advanced = perfect || !stage.needPerfect;
   let crowned = false;
   save.totalLaps++;
+  save.runLaps++;
   save.best = Math.max(save.best, score);
   if (advanced) {
     save.lap = 0;
@@ -292,11 +342,27 @@ export function betterGrade(a: Grade | '', b: Grade | ''): Grade | '' {
   return GRADES.indexOf(a) <= GRADES.indexOf(b) ? a : b;
 }
 
+/** 우승까지 걸릴 수 있는 가장 적은 바퀴 수(사격 3단계 + 최종 시험) */
+export const MIN_WIN_LAPS = STAGES.length;
+const GRADE_POINTS: Record<Grade, number> = { S: 300, A: 200, B: 100, C: 0 };
+
+/**
+ * 우승 점수: 빨리(적은 바퀴로) 우승할수록 높다. 바퀴 하나 차이(500)가
+ * 등급(최대 300)과 시험 점수(최대 99)를 합친 것보다 크고, 등급 한 칸(100)이 시험 점수보다 커서
+ * 빠른 우승 > 등급 > 시험 점수 순으로 언제나 정해진다.
+ */
+export function winPoints(w: Pick<Win, 'laps' | 'grade' | 'score'>): number {
+  const speed = Math.max(500, 5000 - 500 * Math.max(0, w.laps - MIN_WIN_LAPS));
+  return speed + GRADE_POINTS[w.grade] + Math.min(99, Math.floor(w.score / 20));
+}
+
 export interface BossOutcome {
   grade: Grade;
   perfect: boolean;
   /** 이번 점수가 최고 기록인가 */
   newBest: boolean;
+  /** 이번 우승 기록 */
+  win: Win;
   coins: { label: string; amount: number }[];
   total: number;
   levelChange: number;
@@ -306,7 +372,7 @@ export interface BossOutcome {
  * 최종 시험을 끝냈을 때: 왕관을 받고 처음 단계로 돌아간다.
  * wrongShots: 틀리게 쓴(또는 시간을 넘긴) 횟수.
  */
-export function finishBoss(save: Save, wrongShots: number, score: number): BossOutcome {
+export function finishBoss(save: Save, wrongShots: number, score: number, now: number = Date.now()): BossOutcome {
   const grade = gradeOf(wrongShots);
   const perfect = wrongShots === 0;
   const coins: BossOutcome['coins'] = [{ label: '글자 도둑 대왕을 물리쳤어요', amount: 100 }];
@@ -326,11 +392,43 @@ export function finishBoss(save: Save, wrongShots: number, score: number): BossO
   save.best = Math.max(save.best, score);
   save.totalLaps++;
   save.crowns++;
+  const win: Win = { nth: save.bossClears, laps: Math.max(MIN_WIN_LAPS, save.runLaps + 1), grade, score, at: now };
+  save.wins.push(win);
+  if (win.laps === MIN_WIN_LAPS) coins.push({ label: '⚡ 한 번에 우승!', amount: 150 });
+  save.runLaps = 0;
   save.stage = 0;
   save.lap = 0;
   save.lastWrong = null;
 
   const total = coins.reduce((n, c) => n + c.amount, 0);
   save.coins += total;
-  return { grade, perfect, newBest, coins, total, levelChange: save.level - before };
+  return { grade, perfect, newBest, win, coins, total, levelChange: save.level - before };
+}
+
+// ───────── 난사(아무 데나 쏘기) 경고 ─────────
+
+export const RECKLESS_WINDOW_MS = 6000;
+export const RECKLESS_SHOTS = 6;
+export const RECKLESS_LOCK_MS = 3000;
+export const RECKLESS_COIN_PENALTY = 5;
+
+/**
+ * 최근 빗나간·틀린 사격 시각을 모아 두고, 짧은 시간에 너무 많으면 true(경고).
+ * 경고가 나면 목록을 비운다.
+ */
+export function recordBadShot(log: number[], now: number): boolean {
+  log.push(now);
+  while (log.length && now - log[0] > RECKLESS_WINDOW_MS) log.shift();
+  if (log.length < RECKLESS_SHOTS) return false;
+  log.length = 0;
+  return true;
+}
+
+/** 경고를 받았을 때: 두 번째부터 코인을 조금 잃는다. 잃은 코인을 돌려준다 */
+export function applyWarning(save: Save): number {
+  save.warnings++;
+  if (save.warnings < 2) return 0;
+  const lost = Math.min(save.coins, RECKLESS_COIN_PENALTY);
+  save.coins -= lost;
+  return lost;
 }

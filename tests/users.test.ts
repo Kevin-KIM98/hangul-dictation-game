@@ -4,10 +4,10 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { sha256 } from '../src/scripts/sha256.ts';
 import {
-  Users, addFriend, bragText, decodeBrag, encodeBrag, fameOf, loadFriends, nameError, passwordError, rankRecords, recordOf,
-  LEGACY_SAVE_KEY, type StorageLike,
+  Users, addFriend, bestWin, bragText, decodeBrag, decodeRecords, encodeBrag, encodeRecords, fameOf, loadFriends, nameError,
+  passwordError, rankRecords, rankWinners, recordOf, LEGACY_SAVE_KEY, type StorageLike,
 } from '../src/scripts/users.ts';
-import { newSave } from '../src/scripts/campaign.ts';
+import { newSave, type Win } from '../src/scripts/campaign.ts';
 
 function memory(): StorageLike & { map: Map<string, string> } {
   const map = new Map<string, string>();
@@ -68,8 +68,9 @@ test('명예 점수와 순위', () => {
   assert.deepEqual(rankRecords([a, b, c]).map((r) => r.name), ['c', 'b', 'a']);
 });
 
-test('자랑 링크: 인코딩·디코딩, 변조는 거부', () => {
-  const r = recordOf('민수 짱', { ...newSave(), crowns: 3, best: 420, bossBest: 310, bossGrade: 'A', bossClears: 2 }, 1700000000000);
+test('자랑 링크: 인코딩·디코딩(우승 기록 포함), 변조는 거부', () => {
+  const wins: Win[] = [{ nth: 1, laps: 6, grade: 'A', score: 900, at: 1 }, { nth: 2, laps: 4, grade: 'B', score: 700, at: 2 }];
+  const r = recordOf('민수 짱', { ...newSave(), crowns: 3, best: 420, bossBest: 310, bossGrade: 'A', bossClears: 2, wins }, 1700000000000);
   const code = encodeBrag(r);
   assert.ok(/^[A-Za-z0-9_-]+$/.test(code));
   const back = decodeBrag(code)!;
@@ -77,7 +78,22 @@ test('자랑 링크: 인코딩·디코딩, 변조는 거부', () => {
   assert.ok(back.friend);
   assert.equal(decodeBrag(code.slice(0, -2) + 'zz'), null);
   assert.equal(decodeBrag('%%%'), null);
-  assert.ok(bragText(r, 'https://x.y/').includes('A등급'));
+  const text = bragText(r, 'https://x.y/');
+  assert.ok(text.includes('2회차 우승') && text.includes('4바퀴'));
+  assert.equal(bestWin(wins)?.nth, 2);
+  // 여러 명(명예의 전당 전체)
+  const many = decodeRecords(encodeRecords([r, recordOf('영희', newSave(), 5)]))!;
+  assert.deepEqual(many.map((m) => m.name), ['민수 짱', '영희']);
+});
+
+test('우승자 명단: 적은 바퀴가 언제나 위, 같은 점수는 공동 순위', () => {
+  const a = recordOf('빠른이', { ...newSave(), wins: [{ nth: 1, laps: 4, grade: 'C', score: 300, at: 10 }] }, 1);
+  const b = recordOf('꼼꼼이', { ...newSave(), wins: [{ nth: 1, laps: 5, grade: 'S', score: 1990, at: 5 }] }, 2);
+  const c = recordOf('쌍둥이', { ...newSave(), wins: [{ nth: 1, laps: 4, grade: 'C', score: 305, at: 20 }] }, 3);
+  const d = recordOf('느긋이', { ...newSave(), wins: [{ nth: 1, laps: 20, grade: 'S', score: 1500, at: 1 }, { nth: 2, laps: 4, grade: 'S', score: 1500, at: 30 }] }, 4);
+  const list = rankWinners([a, b, c, d]);
+  assert.deepEqual(list.map((w) => `${w.name}${w.nth}:${w.rank}${w.tied ? '=' : ''}`), ['느긋이2:1', '빠른이1:2=', '쌍둥이1:2=', '꼼꼼이1:4', '느긋이1:5']);
+  assert.ok(list[1].points > list[3].points);
 });
 
 test('친구 기록은 같은 이름이면 더 새 것만 남고, 명예의 전당에 함께 나온다', () => {
@@ -91,4 +107,6 @@ test('친구 기록은 같은 이름이면 더 새 것만 남고, 명예의 전�
   users.register('민수', '1234');
   const names = users.records().map((r) => `${r.name}${r.friend ? '*' : ''}`);
   assert.deepEqual(names, ['영희*', '민수']);
+  assert.ok(addFriend(s, { ...fresh, updated: 3, wins: [{ nth: 1, laps: 4, grade: 'S', score: 1000, at: 3 }] }));
+  assert.deepEqual(users.winners().map((w) => `${w.name}:${w.rank}`), ['영희:1']);
 });

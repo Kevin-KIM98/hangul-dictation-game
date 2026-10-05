@@ -481,13 +481,31 @@ export interface Gun {
   setSkin(id: string): void;
 }
 
-const SKINS: Record<string, { body: number; barrel: number; accent: number; grip: number; metal?: number }> = {
+interface SkinDef {
+  body: number;
+  barrel: number;
+  accent: number;
+  grip: number;
+  metal?: number;
+  /** 몸통 색이 무지개처럼 계속 바뀐다 */
+  rainbow?: boolean;
+  /** 스스로 빛나는 정도 */
+  glow?: number;
+  /** 총구에 아지랑이처럼 빛나는 기운 */
+  aura?: number;
+}
+
+const SKINS: Record<string, SkinDef> = {
   'skin.basic': { body: 0xff5d5d, barrel: 0xffd23f, accent: 0x3ddc97, grip: 0x2b3a67 },
+  'skin.mini': { body: 0xffa94d, barrel: 0xfff4e6, accent: 0x74c0fc, grip: 0x5c3d00 },
   'skin.ocean': { body: 0x2f9bff, barrel: 0xe3f6ff, accent: 0x5ce1e6, grip: 0x123a6b },
   'skin.berry': { body: 0xff7eb6, barrel: 0xfff0f6, accent: 0xff4d6d, grip: 0xa61e4d },
-  'skin.galaxy': { body: 0x5f3dc4, barrel: 0x22b8cf, accent: 0xf783ac, grip: 0x1a1033 },
+  'skin.forest': { body: 0x2f9e44, barrel: 0xd8f5a2, accent: 0x8ce99a, grip: 0x5c3a1e },
+  'skin.galaxy': { body: 0x5f3dc4, barrel: 0x22b8cf, accent: 0xf783ac, grip: 0x1a1033, glow: 0.25 },
   'skin.gold': { body: 0xffc93c, barrel: 0xfff3bf, accent: 0xff922b, grip: 0x5c3d00, metal: 0.75 },
-  'skin.rainbow': { body: 0xff5d5d, barrel: 0xffffff, accent: 0x3ddc97, grip: 0x2b3a67 },
+  'skin.rainbow': { body: 0xff5d5d, barrel: 0xffffff, accent: 0x3ddc97, grip: 0x2b3a67, rainbow: true },
+  'skin.cannon': { body: 0x343a40, barrel: 0xff6b6b, accent: 0xffd43b, grip: 0x212529, metal: 0.5 },
+  'skin.dragon': { body: 0xffd43b, barrel: 0xff922b, accent: 0x9775fa, grip: 0x7a1f1f, metal: 0.85, rainbow: true, glow: 0.45, aura: 1 },
 };
 
 /** 알록달록 물총 */
@@ -542,24 +560,61 @@ export function buildGun(): Gun {
   const starGeo = new THREE.ExtrudeGeometry(star, { depth: 0.012, bevelEnabled: false }).rotateY(-Math.PI / 2);
   add(starGeo, sunny, -0.098, 0.01, 0.02);
 
-  let rainbowSkin = false;
+  // 전설의 용 물총: 총구의 빛나는 기운 + 등의 가시(뿔)
+  const auraTex = (() => {
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const g = c.getContext('2d')!;
+    const grad = g.createRadialGradient(64, 64, 4, 64, 64, 64);
+    grad.addColorStop(0, 'rgba(255,255,255,0.95)');
+    grad.addColorStop(0.3, 'rgba(255,220,120,0.6)');
+    grad.addColorStop(1, 'rgba(255,120,60,0)');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 128, 128);
+    return new THREE.CanvasTexture(c);
+  })();
+  const aura = new THREE.Sprite(new THREE.SpriteMaterial({ map: auraTex, transparent: true, depthWrite: false, depthTest: false, opacity: 0.9 }));
+  aura.position.set(0, 0.02, -0.8);
+  aura.visible = false;
+  group.add(aura);
+  const horns: THREE.Mesh[] = [];
+  for (let i = 0; i < 4; i++) {
+    const horn = add(new THREE.ConeGeometry(0.03, 0.12, 6), mint, 0, 0.13, 0.12 - i * 0.12);
+    horn.rotation.x = -0.5;
+    horn.visible = false;
+    horns.push(horn);
+  }
+
+  let current: SkinDef = SKINS['skin.basic'];
   return {
     group,
     muzzle: new THREE.Vector3(0, 0.02, -0.78),
     setSkin(id) {
-      const skin = SKINS[id] ?? SKINS['skin.basic'];
+      const skin = (current = SKINS[id] ?? SKINS['skin.basic']);
       coral.color.set(skin.body);
       sunny.color.set(skin.barrel);
       mint.color.set(skin.accent);
       navy.color.set(skin.grip);
-      for (const m of [coral, sunny, mint]) m.metalness = skin.metal ?? 0.05;
-      rainbowSkin = id === 'skin.rainbow';
+      for (const m of [coral, sunny, mint]) {
+        m.metalness = skin.metal ?? 0.05;
+        m.emissive.set(skin.glow ? m.color : 0x000000);
+        m.emissiveIntensity = skin.glow ?? 0;
+      }
+      aura.visible = !!skin.aura;
+      for (const h of horns) h.visible = !!skin.aura;
     },
     animate(recoil, t) {
-      if (rainbowSkin) {
-        coral.color.setHSL((t * 0.12) % 1, 0.85, 0.62);
-        mint.color.setHSL((t * 0.12 + 0.33) % 1, 0.8, 0.58);
-        sunny.color.setHSL((t * 0.12 + 0.66) % 1, 0.9, 0.7);
+      if (current.rainbow) {
+        const speed = current.aura ? 0.35 : 0.12;
+        coral.color.setHSL((t * speed) % 1, 0.9, current.aura ? 0.55 : 0.62);
+        mint.color.setHSL((t * speed + 0.33) % 1, 0.8, 0.58);
+        if (!current.aura) sunny.color.setHSL((t * speed + 0.66) % 1, 0.9, 0.7);
+        if (current.glow) for (const m of [coral, mint]) m.emissive.copy(m.color);
+      }
+      if (current.aura) {
+        aura.scale.setScalar(0.28 + Math.sin(t * 6) * 0.05 + recoil * 0.4);
+        aura.material.rotation = t * 2;
+        aura.material.opacity = 0.7 + Math.sin(t * 9) * 0.2;
       }
       pump.position.z = -0.42 + recoil * 0.1;
       water.position.y = 0.17 + Math.sin(t * 2.2) * 0.008 - recoil * 0.015;
