@@ -1,4 +1,5 @@
 // 받아쓰기 급수표 사진에서 문제 문장을 읽어 낸다 (브라우저 안에서 Tesseract로 인식)
+import { decoysFor, jamoDiff, looksAlike, JAMO_NAME } from './hangul.ts';
 
 const MAX_SIDE = 2000;
 // 하위 경로(GitHub Pages)에 배포해도 찾을 수 있게 사이트 기준 경로를 붙인다
@@ -108,12 +109,179 @@ export async function releaseHandwriting(): Promise<void> {
   if (w) await (await w).terminate().catch(() => {});
 }
 
-/** 손글씨 캔버스에서 읽힌 한글만 돌려준다(없으면 빈 문자열) */
-export async function readHandwriting(canvas: HTMLCanvasElement): Promise<string> {
+/** 손글씨 캔버스에서 읽힌 한글만 돌려준다(없으면 빈 문자열). psm 8 = 한 단어, 10 = 한 글자 */
+export async function readHandwriting(canvas: HTMLCanvasElement, psm: 8 | 10 = 8): Promise<string> {
   await loadHandwriting();
   const worker = await shared!;
-  const { data } = await worker.recognize(canvas);
-  return data.text.replace(/[^가-힣]/g, '');
+  if (psm !== 8) await worker.setParameters({ tessedit_pageseg_mode: String(psm) as never });
+  try {
+    const { data } = await worker.recognize(canvas);
+    return data.text.replace(/[^가-힣]/g, '');
+  } finally {
+    if (psm !== 8) await worker.setParameters({ tessedit_pageseg_mode: '8' as never });
+  }
+}
+
+// ───────── 아이 글씨를 너그럽게 보는 판정 ─────────
+
+const FONTS = ['Jua', 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', 'Noto Sans CJK KR', 'NanumGothic', 'sans-serif'];
+const FEAT = 40;
+
+/** 획을 굵게(thick>0) 또는 글자를 작게(scale<1) 바꾼 사본 — 기계가 다른 모양으로도 읽어 보게 */
+function variant(src: HTMLCanvasElement, thick: number, scale: number): HTMLCanvasElement {
+  const out = document.createElement('canvas');
+  out.width = out.height = src.width;
+  const g = out.getContext('2d')!;
+  g.fillStyle = '#fff';
+  g.fillRect(0, 0, out.width, out.height);
+  const w = src.width * scale;
+  const off = (src.width - w) / 2;
+  g.globalCompositeOperation = 'multiply';
+  if (thick > 0) {
+    for (let dx = -thick; dx <= thick; dx++) for (let dy = -thick; dy <= thick; dy++) g.drawImage(src, off + dx, off + dy, w, w);
+  } else g.drawImage(src, off, off, w, w);
+  return out;
+}
+
+/** 잉크 부분만 잘라 40×40 으로 맞춘 모양 벡터(0=흰, 1=검) */
+function shapeOf(src: HTMLCanvasElement): Float32Array | null {
+  const w = src.width;
+  const h = src.height;
+  const d = src.getContext('2d')!.getImageData(0, 0, w, h).data;
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      if (d[i + 3] > 40 && d[i] + d[i + 1] + d[i + 2] < 384) {
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+    }
+  }
+  if (x1 < 0) return null;
+  const c = document.createElement('canvas');
+  c.width = c.height = FEAT;
+  const g = c.getContext('2d')!;
+  g.fillStyle = '#fff';
+  g.fillRect(0, 0, FEAT, FEAT);
+  g.filter = 'blur(1px)';
+  const bw = x1 - x0 + 1;
+  const bh = y1 - y0 + 1;
+  const k = (FEAT * 0.9) / Math.max(bw, bh);
+  g.drawImage(src, x0, y0, bw, bh, (FEAT - bw * k) / 2, (FEAT - bh * k) / 2, bw * k, bh * k);
+  const o = g.getImageData(0, 0, FEAT, FEAT).data;
+  const f = new Float32Array(FEAT * FEAT);
+  for (let i = 0; i < f.length; i++) f[i] = 1 - o[i * 4] / 255;
+  return f;
+}
+
+function correlation(a: Float32Array, b: Float32Array): number {
+  const n = a.length;
+  let sa = 0, sb = 0;
+  for (let i = 0; i < n; i++) {
+    sa += a[i];
+    sb += b[i];
+  }
+  const ma = sa / n;
+  const mb = sb / n;
+  let sab = 0, saa = 0, sbb = 0;
+  for (let i = 0; i < n; i++) {
+    const x = a[i] - ma;
+    const y = b[i] - mb;
+    sab += x * y;
+    saa += x * x;
+    sbb += y * y;
+  }
+  return sab / Math.sqrt(saa * sbb + 1e-9);
+}
+
+const templateCache = new Map<string, Float32Array[]>();
+
+/** 글자를 여러 글꼴로 찍은 본보기 모양들 */
+function templates(ch: string): Float32Array[] {
+  let t = templateCache.get(ch);
+  if (t) return t;
+  t = [];
+  const seen = new Set<string>();
+  for (const family of FONTS) {
+    const c = document.createElement('canvas');
+    c.width = c.height = 160;
+    const g = c.getContext('2d')!;
+    g.fillStyle = '#fff';
+    g.fillRect(0, 0, 160, 160);
+    g.fillStyle = '#000';
+    g.font = `120px "${family}"`;
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText(ch, 80, 86);
+    const f = shapeOf(c);
+    if (!f) continue;
+    const key = Array.from(f.subarray(0, 200)).map((v) => Math.round(v * 9)).join('');
+    if (seen.has(key)) continue; // 없는 글꼴은 같은 기본 글꼴로 찍히므로 하나만
+    seen.add(key);
+    t.push(f);
+  }
+  templateCache.set(ch, t);
+  return t;
+}
+
+function shapeScore(drawn: Float32Array, ch: string): number {
+  return Math.max(-1, ...templates(ch).map((t) => correlation(drawn, t)));
+}
+
+export interface Judgement {
+  ok: boolean;
+  /** 기계가 읽은 글자(없으면 '') */
+  read: string;
+  /** 어떻게 맞다고 봤는지 */
+  how: 'ocr' | 'ocr-retry' | 'shape' | 'lenient' | 'none';
+  /** 틀렸을 때 어디가 다른지("받침" 등). 모르면 '' */
+  hint: string;
+}
+
+/**
+ * 쓴 글자가 정답(expected)인지 아이 글씨를 생각해 너그럽게 판정한다.
+ * ① 그대로 읽기 → ② 굵게·작게·한 글자 모드로 다시 읽기 → ③ 글꼴 본보기와 모양 비교(헷갈리는 글자보다 정답에 가까우면 인정)
+ * → ④ 읽힌 글자가 정답과 생김새 비슷한 자모 하나만 다르고 모양도 정답 쪽이면 인정.
+ */
+export async function judgeHandwriting(norm: HTMLCanvasElement, expected: string): Promise<Judgement> {
+  const reads: string[] = [];
+  const first = await readHandwriting(norm);
+  reads.push(first);
+  if (first.includes(expected)) return { ok: true, read: first, how: 'ocr', hint: '' };
+
+  const passes: [HTMLCanvasElement, 8 | 10][] = [
+    [variant(norm, 2, 1), 8],
+    [variant(norm, 0, 0.7), 10],
+    [variant(norm, 1, 0.8), 8],
+  ];
+  for (const [img, psm] of passes) {
+    const r = await readHandwriting(img, psm);
+    reads.push(r);
+    if (r.includes(expected)) return { ok: true, read: r, how: 'ocr-retry', hint: '' };
+  }
+  const read = reads.find((r) => r.length === 1) ?? reads.find((r) => r.length) ?? '';
+  const readCh = [...read][0] ?? '';
+
+  // 모양 비교: 정답 본보기와의 닮음이 헷갈리는 글자들보다 (거의) 높으면 정답
+  const drawn = shapeOf(norm);
+  let shapeOk = false;
+  if (drawn) {
+    const mine = shapeScore(drawn, expected);
+    const rival = Math.max(-1, ...decoysFor(expected, 10).map((d) => shapeScore(drawn, d)));
+    shapeOk = mine >= 0.45 && mine >= rival - 0.03;
+    if (shapeOk && (!readCh || looksAlike(expected, readCh) || jamoDiff(expected, readCh).length >= 2)) {
+      return { ok: true, read, how: 'shape', hint: '' };
+    }
+  }
+  // 읽힌 글자가 정답과 생김새 비슷한 자모 하나만 다르면(ㅅ↔ㅈ 받침 등) 아이 글씨로 보고 인정
+  if (readCh && looksAlike(expected, readCh) && shapeOk) return { ok: true, read, how: 'lenient', hint: '' };
+
+  const diff = readCh ? jamoDiff(expected, readCh) : [];
+  const hint = diff.length === 1 ? JAMO_NAME[diff[0]] : '';
+  return { ok: false, read, how: 'none', hint };
 }
 
 const OCR_SIZE = 200;

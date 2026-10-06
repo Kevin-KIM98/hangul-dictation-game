@@ -140,6 +140,8 @@ export interface LapSnapshot {
   lapCoins: number;
   lapWarnings: number;
   savedAt: number;
+  /** 풀다 만 문항의 상태(채운 칸·하트). 없으면 그 문항을 처음부터 */
+  partial?: { filled: number[]; given: number[]; hearts: number; misses: number; wrong: string[] } | null;
 }
 
 export function reviveSnapshot(raw: unknown): LapSnapshot | null {
@@ -151,7 +153,14 @@ export function reviveSnapshot(raw: unknown): LapSnapshot | null {
     .filter((q): q is QuestionResult => !!q && typeof q === 'object' && typeof (q as QuestionResult).text === 'string')
     .map((q) => ({ text: q.text, stars: num(q.stars, 1), misses: num(q.misses), wrong: Array.isArray(q.wrong) ? q.wrong.filter((w) => typeof w === 'string') : [] }));
   const index = Math.floor(num(r.index));
-  if (index < 1 || results.length !== index) return null;
+  if (index < 0 || results.length !== index) return null;
+  const pr = r.partial;
+  const ints = (v: unknown) => (Array.isArray(v) ? v.filter((n): n is number => Number.isInteger(n) && n >= 0) : []);
+  const partial =
+    pr && typeof pr === 'object'
+      ? { filled: ints(pr.filled), given: ints(pr.given), hearts: num(pr.hearts, 3), misses: num(pr.misses), wrong: Array.isArray(pr.wrong) ? pr.wrong.filter((w) => typeof w === 'string') : [] }
+      : null;
+  if (index === 0 && !partial) return null;
   return {
     setKey: r.setKey,
     stage: Math.floor(num(r.stage)),
@@ -163,6 +172,7 @@ export function reviveSnapshot(raw: unknown): LapSnapshot | null {
     lapCoins: num(r.lapCoins),
     lapWarnings: Math.floor(num(r.lapWarnings)),
     savedAt: num(r.savedAt),
+    partial,
   };
 }
 
@@ -387,6 +397,8 @@ export interface LapOutcome {
 export function finishLap(save: Save, wrongShots: number, score: number, wrongTexts: string[] = []): LapOutcome {
   const stage = STAGES[save.stage];
   const perfect = wrongShots === 0;
+  // 하트를 다 잃은 문항이 하나도 없으면 통과(한두 번 틀린 건 괜찮다)
+  const passed = wrongTexts.length === 0;
   const coins: LapOutcome['coins'] = [{ label: '끝까지 해냈어요', amount: 10 }];
   // 반복할수록 커지는 끈기 보상
   if (save.lap > 0) coins.push({ label: `끈기 보상 (${save.lap + 1}바퀴째)`, amount: Math.min(save.lap, 10) * 5 });
@@ -399,7 +411,7 @@ export function finishLap(save: Save, wrongShots: number, score: number, wrongTe
   if (perfect) save.level = Math.min(MAX_LEVEL, save.level + 1);
   else if (wrongShots >= 8) save.level = Math.max(MIN_LEVEL, save.level - 1);
 
-  const advanced = perfect || !stage.needPerfect;
+  const advanced = passed || !stage.needPerfect;
   let crowned = false;
   save.totalLaps++;
   save.runLaps++;
@@ -459,10 +471,11 @@ export function bossPhase(hpRatio: number): 0 | 1 | 2 {
   return 0;
 }
 
+/** 등급: 틀린 횟수(문항마다 하트 2개까지는 틀려도 통과하므로 너그럽게) */
 export function gradeOf(wrongShots: number): Grade {
   if (wrongShots === 0) return 'S';
-  if (wrongShots <= 2) return 'A';
-  if (wrongShots <= 5) return 'B';
+  if (wrongShots <= 3) return 'A';
+  if (wrongShots <= 8) return 'B';
   return 'C';
 }
 
@@ -509,13 +522,14 @@ export interface BossOutcome {
  */
 export function finishBoss(save: Save, wrongShots: number, score: number, now: number = Date.now(), setTitle = '', wrongTexts: string[] = []): BossOutcome {
   const perfect = wrongShots === 0;
+  const passed = wrongTexts.length === 0; // 하트를 다 잃은 문항이 없으면 통과
   save.totalLaps++;
   save.runLaps++;
   save.best = Math.max(save.best, score);
+  save.bossWrong += wrongShots;
 
-  if (!perfect) {
-    // 틀렸다: 왕관은 아직. 틀린 문제만 들고 보스전을 다시 한다
-    save.bossWrong += wrongShots;
+  if (!passed) {
+    // 하트를 다 잃은 문항이 있다: 왕관은 아직. 그 문제만 들고 보스전을 다시 한다
     save.lap++;
     save.lastWrong = wrongShots;
     save.retry = wrongTexts.slice();

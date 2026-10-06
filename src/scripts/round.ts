@@ -46,6 +46,36 @@ export class Round {
     }
   }
 
+  /** 문항 도중의 상태(채운 칸·미리 보인 칸·하트)를 그대로 되살린다 */
+  restorePartial(p: { filled: number[]; given: number[]; hearts: number; misses: number; wrong: string[] }): void {
+    for (const c of this.cells) {
+      if (c.kind !== 'target') continue;
+      c.filled = false;
+      c.given = false;
+    }
+    for (const i of p.given) if (this.cells[i]?.kind === 'target') (this.cells[i].filled = true), (this.cells[i].given = true);
+    for (const i of p.filled) if (this.cells[i]?.kind === 'target') this.cells[i].filled = true;
+    this.hearts = Math.min(MAX_HEARTS, Math.max(0, p.hearts));
+    this.misses = Math.max(0, p.misses);
+    this.wrong = p.wrong.slice();
+  }
+
+  /** 문항 도중의 상태(저장용) */
+  get partial(): { filled: number[]; given: number[]; hearts: number; misses: number; wrong: string[] } {
+    const filled: number[] = [];
+    const given: number[] = [];
+    this.cells.forEach((c, i) => {
+      if (c.kind !== 'target' || !c.filled) return;
+      (c.given ? given : filled).push(i);
+    });
+    return { filled, given, hearts: this.hearts, misses: this.misses, wrong: this.wrong.slice() };
+  }
+
+  /** 하트를 다 잃었는가(이 문항은 "틀린 문항") */
+  get failed(): boolean {
+    return this.misses >= MAX_HEARTS;
+  }
+
   get nextIndex(): number {
     return this.cells.findIndex((c) => !c.filled);
   }

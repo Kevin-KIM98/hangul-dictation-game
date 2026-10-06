@@ -18,6 +18,7 @@ import {
 import { Pad } from './pad.ts';
 import { BossView } from './boss.ts';
 import { drawBragCard, shareRecord } from './share.ts';
+import { cheerFor, hopeFor } from './cheer.ts';
 
 type State = 'login' | 'profile' | 'rounds' | 'menu' | 'playing' | 'boss' | 'between' | 'paused' | 'result' | 'editor' | 'shop' | 'fame';
 
@@ -227,13 +228,18 @@ function paintMenu(): void {
       : retrying ? `🔁 틀린 ${active.length}문제 다시` : '게임 시작';
 }
 
-/** 문항을 하나 끝낼 때마다 바퀴 진행을 저장해 두어, 나중에 이어서 할 수 있게 한다 */
-function snapshotLap(): void {
+/**
+ * 바퀴 진행을 저장해 두어 나중에 이어서 할 수 있게 한다.
+ * 문항을 끝냈을 때(done)는 다음 문항부터, 풀던 중이면 채운 칸·하트까지 그대로.
+ */
+function snapshotLap(done = true): void {
+  if (!game?.round) return;
   const snap: LapSnapshot = {
     setKey: save.setKey,
     stage: save.stage,
     lap: save.lap,
-    index: game.index + 1,
+    index: done ? game.index + 1 : game.index,
+    partial: done ? null : game.round.partial,
     score: game.score,
     results: game.results.map((r) => ({ ...r, wrong: r.wrong.slice() })),
     earned: earned.slice(),
@@ -245,6 +251,20 @@ function snapshotLap(): void {
   persist();
 }
 
+/** 풀던 문항 도중의 진행을 저장(틀리거나 맞힐 때마다, 멈출 때) */
+function saveProgress(): void {
+  if (state === 'playing' || state === 'boss' || state === 'paused') snapshotLap(false);
+}
+
+let pendingPartial: NonNullable<LapSnapshot['partial']> | null = null;
+
+/** 이어하기로 되살린 문항 도중 상태를 지금 문항에 적용한다 */
+function applyPartial(): void {
+  if (!pendingPartial) return;
+  game.round.restorePartial(pendingPartial);
+  pendingPartial = null;
+}
+
 /** 이어하기: 저장된 진행을 게임에 되살린다. 성공하면 true */
 function restoreLap(): boolean {
   const snap = save.resume;
@@ -252,6 +272,7 @@ function restoreLap(): boolean {
   earned = snap.earned.slice();
   lapCoins = snap.lapCoins;
   lapWarnings = snap.lapWarnings;
+  pendingPartial = snap.partial ?? null;
   return true;
 }
 
@@ -292,7 +313,7 @@ function popup(text: string, x: number, y: number, kind = ''): void {
   el.style.left = `${x}px`;
   el.style.top = `${y}px`;
   document.body.append(el);
-  setTimeout(() => el.remove(), 1000);
+  setTimeout(() => el.remove(), kind === 'cheer' ? 1800 : 1000);
 }
 
 function praise(): void {
@@ -416,6 +437,7 @@ function nextQuestion(): void {
   clearTimeout(rereadTimer);
   bonusUsed = false;
   lastCorrect = performance.now();
+  applyPartial();
   if (mode === 'boss') return nextBossQuestion();
   timeMax = timeLeft = mode === 'speed' ? timeLimit(game.round.targetCount, save.level) : 0;
   paintTimer();
@@ -479,6 +501,7 @@ function onHit(b: Balloon): void {
     flyLetter(b, r.index);
     stage.pop(b);
     stage.shake(0.6);
+    if (game.round.misses > 0 && game.round.hearts > 0) popup('좋아, 바로 그거야! 👍', window.innerWidth / 2, window.innerHeight * 0.3, 'cheer');
     if (!r.done && !bonusUsed && Math.random() < 0.4) {
       bonusUsed = true;
       stage.spawnBonus();
@@ -499,11 +522,18 @@ function onHit(b: Balloon): void {
     void $('hearts').offsetWidth;
     $('hearts').classList.add('shake');
     popup('앗!', at.x, at.y - 30, 'oops');
+    cheer(game.round.hearts);
     updateHint();
     rereadSoon();
     badShot();
   }
   paintHud();
+  saveProgress();
+}
+
+/** 틀렸을 때 응원 한마디(화면 가운데 위) */
+function cheer(heartsLeft: number): void {
+  popup(cheerFor(heartsLeft), window.innerWidth / 2, window.innerHeight * 0.3, 'cheer');
 }
 
 /** 빗나가거나 틀린 사격. 짧은 시간에 몰리면 경고하고 잠시 못 쏘게 한다 */
@@ -556,7 +586,7 @@ function showClear(): void {
     extra = ` · 🐉🪙+${bonus}`;
   }
   $('clear-sticker').textContent = `스티커 선물 ${sticker}${extra}`;
-  snapshotLap();
+  snapshotLap(true);
   $('clear').classList.add('show');
   setTimeout(() => {
     $('clear').classList.remove('show');
@@ -572,7 +602,8 @@ function showResult(): void {
   releaseLock();
   const def = STAGES[save.stage];
   const lapNo = save.lap + 1;
-  const wrongTexts = game.results.filter((r) => r.misses > 0).map((r) => r.text);
+  // 하트를 다 잃은 문항만 "틀린 문항"(한두 번 틀린 건 통과)
+  const wrongTexts = game.results.filter((r) => r.misses >= MAX_HEARTS).map((r) => r.text);
   const missed = wrongTexts.length;
   const out = finishLap(save, game.wrongShots, game.score, wrongTexts);
   lapCoins += out.total;
@@ -592,7 +623,7 @@ function showResult(): void {
   let message: string;
   if (out.crowned) message = '왕관을 받았어요! 처음 단계부터 새 배경에서 또 도전해요.';
   else if (out.advanced) message = `다음 단계가 열렸어요: ${next.emoji} ${next.name}`;
-  else message = `${missed}문제에서 틀렸어요. 틀린 ${missed}문제만 다시 해요! 다 맞히면 다음 단계가 열려요.`;
+  else message = `${hopeFor(missed, game.results.length)} 틀린 ${missed}문제만 다시 하고, 하트가 남으면 통과예요!`;
   if (out.levelChange > 0) message += ' (난이도 ⬆)';
   if (out.levelChange < 0) message += ' (조금 쉽게 해 줄게요)';
   if (lapWarnings) message += ` ⚠️ 아무 데나 쏘기 경고 ${lapWarnings}번 — 잘 듣고 겨눠서 쏴요!`;
@@ -628,7 +659,7 @@ function renderResultList(): void {
       text.textContent = r.text;
       const stars = document.createElement('span');
       stars.className = 'r-stars';
-      stars.textContent = r.misses ? '❌' : '⭕';
+      stars.textContent = r.misses >= MAX_HEARTS ? '❌' : r.misses ? '🟡' : '⭕';
       li.append(text, stars);
       if (r.wrong.length) {
         const wrong = document.createElement('span');
@@ -674,7 +705,7 @@ async function startBoss(resume = false): Promise<void> {
   stage.clearBalloons();
   bossMax = game.questions.reduce((n, q) => n + new Round(q).targetCount, 0);
   // 이어하기: 이미 되찾은 글자만큼 보스 체력이 깎여 있다
-  bossHp = bossMax - game.results.reduce((n, r) => n + new Round(r.text).targetCount, 0);
+  bossHp = bossMax - game.results.reduce((n, r) => n + new Round(r.text).targetCount, 0) - (resumed && save.resume?.partial ? save.resume.partial.filled.length : 0);
   setState('boss');
   boss.show(true);
   boss.setHp(bossHp, bossMax);
@@ -775,10 +806,12 @@ function bossTimeout(): void {
   void $('hearts').offsetWidth;
   $('hearts').classList.add('shake');
   popup('⏰ 시간 끝!', window.innerWidth / 2, window.innerHeight * 0.4, 'oops');
+  cheer(game.round.hearts);
   paintHud();
   updateBossHint();
   resetBossTimer();
   rereadSoon();
+  saveProgress();
 }
 
 /** [다 썼어요]: 쓴 글자를 읽어서 판정 */
@@ -794,18 +827,20 @@ async function submitWriting(): Promise<void> {
   } else {
     const img = pad.toImage();
     if (!img) return toast('먼저 글자를 써 보세요 ✏️', 1600);
-    const { normalizeHandwriting, readHandwriting } = await import('./ocr.ts');
+    const { normalizeHandwriting, judgeHandwriting } = await import('./ocr.ts');
     const norm = normalizeHandwriting(img);
     if (!norm) return toast('먼저 글자를 써 보세요 ✏️', 1600);
+    const expected = game.round.nextChar;
+    if (!expected) return;
     const ok = $<HTMLButtonElement>('pad-ok');
     busy = true;
     $('pad-panel').classList.add('busy');
     ok.disabled = true;
     ok.textContent = '👀 읽는 중…';
+    let verdict: import('./ocr.ts').Judgement | null = null;
     try {
-      text = await readHandwriting(norm);
+      verdict = await judgeHandwriting(norm, expected);
     } catch {
-      text = '';
       toast('글자를 읽지 못했어요. 다시 써 볼까요?', 2000);
     } finally {
       busy = false;
@@ -813,10 +848,14 @@ async function submitWriting(): Promise<void> {
       ok.disabled = false;
       ok.textContent = '✔ 다 썼어요';
     }
-    if (state !== 'boss') return;
+    if (state !== 'boss' || !verdict) return;
+    lastJudgeHint = verdict.hint;
+    text = verdict.ok ? expected : verdict.read;
   }
   onWritten(text);
 }
+
+let lastJudgeHint = '';
 
 /** 읽힌 글자(한글만)로 판정 */
 function onWritten(text: string): void {
@@ -837,11 +876,15 @@ function onWritten(text: string): void {
   $('hearts').classList.remove('shake');
   void $('hearts').offsetWidth;
   $('hearts').classList.add('shake');
-  toast(`'${text}'(으)로 읽혔어요. 다시 잘 듣고 또박또박 써요!`, 2600);
+  const where = lastJudgeHint ? ` ${lastJudgeHint}을(를) 또박또박!` : '';
+  lastJudgeHint = '';
+  toast(`'${text}'(으)로 읽혔어요.${where} 다시 잘 듣고 써요!`, 2800);
+  cheer(game.round.hearts);
   paintHud();
   updateBossHint();
   resetBossTimer();
   rereadSoon();
+  saveProgress();
 }
 
 /** 맞게 썼다: 보스가 맞는다 */
@@ -869,6 +912,7 @@ function bossHitBy(ch: string): void {
   pad.setTrace(null);
   paintBoard();
   paintHud();
+  if (!r.done) saveProgress();
   if (r.done) {
     busy = true;
     pad.enabled = false;
@@ -887,7 +931,7 @@ function showBossResult(): void {
   document.body.classList.remove('hurry');
   stage.clearBalloons();
   releaseLock();
-  const wrongTexts = game.results.filter((r) => r.misses > 0).map((r) => r.text);
+  const wrongTexts = game.results.filter((r) => r.misses >= MAX_HEARTS).map((r) => r.text);
   const out = finishBoss(save, game.wrongShots, game.score, Date.now(), current.title, wrongTexts);
   lapCoins += out.total;
   save.stickers = [...new Set([...save.stickers, ...earned])];
@@ -915,7 +959,7 @@ function showBossResult(): void {
     setTimeout(() => boss.show(false), 2000);
     $('result-title').textContent = `💪 아직이야! 틀린 ${out.retryCount}문제`;
     $('result-score').textContent = `🐉 ${game.wrongShots}번 틀렸어요 · ${game.score}점`;
-    $('result-stars').textContent = `틀린 ${out.retryCount}문제만 다시 써서 보스를 물리쳐요. 하나도 안 틀리면 왕관! (지금까지 ${save.bossWrong}번 틀림 → ${out.grade}등급)`;
+    $('result-stars').textContent = `${hopeFor(out.retryCount, game.results.length)} 하트를 다 잃은 ${out.retryCount}문제만 다시 쓰면 보스를 물리쳐요! (지금까지 ${save.bossWrong}번 틀림 → ${out.grade}등급)`;
     $('again').textContent = `🐉 보스전 다시 (틀린 ${out.retryCount}문제)`;
     $('result-share').hidden = true;
     renderResultList();
@@ -934,7 +978,7 @@ function showBossResult(): void {
   let message = win.laps === MIN_WIN_LAPS ? `⚡ ${win.laps}바퀴 만에 한 번에 우승했어요! ` : `${win.laps}바퀴 만에 우승했어요. `;
   message += `우승 점수 ${winPoints(win)}점`;
   if (rank) message += rank.tied ? ` · 명예의 전당 공동 ${rank.rank}위!` : ` · 명예의 전당 ${rank.rank}위!`;
-  message += out.grade === 'S' ? ' 한 글자도 안 틀렸어요!' : ` (${out.grade}등급: 반복한 보스전까지 합쳐 틀린 횟수로 정해요)`;
+  message += out.grade === 'S' ? ' 한 글자도 안 틀렸어요!' : ` (${out.grade}등급: 보스전에서 틀린 횟수로 정해요)`;
   if (out.levelChange > 0) message += ' (난이도 ⬆)';
   $('result-stars').textContent = message;
   $('again').textContent = `${STAGES[0].emoji} 새 배경에서 처음부터 다시`;
@@ -1331,6 +1375,7 @@ function pause(): void {
   clearTimeout(rereadTimer);
   stopSpeaking();
   releaseLock();
+  saveProgress();
 }
 
 function resume(): void {
@@ -1883,6 +1928,14 @@ async function boot(): Promise<void> {
     },
     timeout() {
       if (state === 'boss') bossTimeout();
+    },
+    /** 검수용: 글꼴 글자를 찍어 판정만 해 본다 */
+    async judge(ch: string, expected: string) {
+      pad.stamp(ch);
+      const { normalizeHandwriting, judgeHandwriting } = await import('./ocr.ts');
+      const norm = normalizeHandwriting(pad.toImage()!);
+      pad.clear();
+      return norm ? judgeHandwriting(norm, expected) : null;
     },
   };
 }

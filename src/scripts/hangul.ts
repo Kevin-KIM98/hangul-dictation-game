@@ -93,3 +93,47 @@ export function distractorsFor(
   take(pool);
   return out;
 }
+
+export type JamoPart = 'cho' | 'jung' | 'jong';
+export const JAMO_NAME: Record<JamoPart, string> = { cho: '첫 자음', jung: '모음', jong: '받침' };
+
+/** 두 음절이 어느 자모에서 다른지. 같으면 [], 한글이 아니면 ['cho','jung','jong'] */
+export function jamoDiff(a: string, b: string): JamoPart[] {
+  if (!isHangul(a) || !isHangul(b)) return ['cho', 'jung', 'jong'];
+  const x = decompose(a);
+  const y = decompose(b);
+  const out: JamoPart[] = [];
+  if (x[0] !== y[0]) out.push('cho');
+  if (x[1] !== y[1]) out.push('jung');
+  if (x[2] !== y[2]) out.push('jong');
+  return out;
+}
+
+// 손글씨에서 모양이 비슷해 기계가 자주 혼동하는 자모(소리가 아니라 생김새 기준)
+const CHO_LOOK = [[0, 1, 15], [2, 3, 4], [5, 6, 16], [7, 8, 17], [9, 10, 12, 13, 14], [11]]; // ㄱㄲㅋ ㄴㄷㄸ ㄹㅁㅌ ㅂㅃㅍ ㅅㅆㅈㅉㅊ ㅇ
+// 모음은 봐주지 않는다(ㅏ/ㅐ, ㅐ/ㅔ 가 받아쓰기의 핵심)
+const JUNG_LOOK: number[][] = [];
+const JONG_LOOK = [[0], [1, 2, 24, 3], [4, 5, 6], [7, 19, 20, 22, 23, 25, 27], [8, 9, 10, 11, 12, 13, 14, 15], [16, 17, 18, 26], [21]];
+
+function sameLook(groups: number[][], a: number, b: number): boolean {
+  return a === b || groups.some((g) => g.includes(a) && g.includes(b));
+}
+
+/**
+ * 기계가 읽은 글자(read)가 정답(expected)과 "생김새가 비슷한 한 자모"만 다른가.
+ * 아이들 글씨를 너무 빡빡하게 보지 않기 위한 느슨한 판정에 쓴다.
+ */
+export function looksAlike(expected: string, read: string): boolean {
+  const diff = jamoDiff(expected, read);
+  if (diff.length !== 1) return diff.length === 0;
+  const [e, r] = [decompose(expected), decompose(read)];
+  if (diff[0] === 'cho') return sameLook(CHO_LOOK, e[0], r[0]);
+  if (diff[0] === 'jung') return sameLook(JUNG_LOOK, e[1], r[1]);
+  return sameLook(JONG_LOOK, e[2], r[2]);
+}
+
+/** 정답과 헷갈리는 글자들(모양 비교의 비교 대상) */
+export function decoysFor(ch: string, max = 10): string[] {
+  const { strong, weak } = similar(ch);
+  return [...new Set([...strong, ...weak])].slice(0, max);
+}

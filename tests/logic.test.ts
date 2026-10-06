@@ -1,7 +1,8 @@
 // 실행: node --test tests/
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { compose, decompose, distractorsFor, similar } from '../src/scripts/hangul.ts';
+import { compose, decompose, decoysFor, distractorsFor, jamoDiff, looksAlike, similar } from '../src/scripts/hangul.ts';
+import { cheerFor, hopeFor } from '../src/scripts/cheer.ts';
 import { Game, Round } from '../src/scripts/round.ts';
 import {
   BOSS_STAGE, ITEMS, MIN_WIN_LAPS, RECKLESS_SHOTS, STAGES, applyQuestionSet, applyWarning, bossPhase, bossTime, buy, difficulty, equip, finishBoss, finishLap,
@@ -93,11 +94,11 @@ test('빈칸 채우기: 정한 수만 비우고 받침 글자를 먼저 비운�
 
 test('바퀴: 틀리면 같은 단계를 반복하고 끈기 보상이 커진다', () => {
   const s = newSave();
-  const a = finishLap(s, 3, 100);
+  const a = finishLap(s, 3, 100, ['가']);
   assert.equal(a.perfect, false);
   assert.equal(a.advanced, false);
   assert.deepEqual([s.stage, s.lap, s.lastWrong], [0, 1, 3]);
-  const b = finishLap(s, 1, 100);
+  const b = finishLap(s, 1, 100, ['가']);
   assert.ok(b.total > a.total);
   assert.ok(b.coins.some((c) => c.label.includes('덜 틀렸어요')));
   assert.deepEqual([s.stage, s.lap], [0, 2]);
@@ -141,7 +142,7 @@ test('최종 시험: 등급·왕관·기록, 끝나면 처음 단계로', () => 
   assert.ok(c.cleared);
   assert.deepEqual([c.grade, c.newBest, s.bossBest, s.bossGrade, s.crowns, s.bossWrong, s.retry, s.stage], ['B', false, 300, 'S', 2, 0, [], 0]);
   assert.deepEqual([c.win!.nth, c.win!.laps], [2, 9]); // 반복한 보스전도 바퀴 수에 들어간다
-  assert.deepEqual([gradeOf(1), gradeOf(2), gradeOf(3), gradeOf(9)], ['A', 'A', 'B', 'C']);
+  assert.deepEqual([gradeOf(1), gradeOf(3), gradeOf(4), gradeOf(9)], ['A', 'A', 'B', 'C']);
 });
 
 test('최종 시험: 보스 체력이 줄면 글자 쓰는 시간이 짧아진다', () => {
@@ -170,7 +171,7 @@ test('회차를 바꾸면 새 회차는 처음부터, 돌아오면 하던 데서
   assert.equal(s.stage, 1);
   assert.equal(applyQuestionSet(s, ['다', '라']), true);
   assert.deepEqual([s.stage, s.lap, s.level, s.coins], [0, 0, 2, coins]);
-  finishLap(s, 5, 10); // 둘째 회차에서 한 바퀴(틀림)
+  finishLap(s, 5, 10, ['다']); // 둘째 회차에서 한 바퀴(틀림)
   assert.deepEqual([s.stage, s.lap], [0, 1]);
   assert.equal(applyQuestionSet(s, ['가', '나']), true); // 첫 회차로 돌아오면 2단계·난이도 3
   assert.deepEqual([s.stage, s.lap, s.level], [1, 0, 3]);
@@ -283,4 +284,66 @@ test('틀린 바퀴 뒤에는 틀린 문제만 다시 하고, 다 맞히면 다�
   applyQuestionSet(s, all);
   assert.deepEqual(s.retry, ['가']);
   assert.deepEqual(reviveSave({ retry: ['가', 3], bossWrong: 2 }).retry, ['가']);
+});
+
+test('하트 규칙: 한두 번 틀린 문항은 통과, 하트를 다 잃은 문항만 다시', () => {
+  const s = newSave();
+  const a = finishLap(s, 4, 10, []); // 틀리긴 했지만 하트를 다 잃은 문항은 없다
+  assert.deepEqual([a.perfect, a.advanced, s.stage], [false, true, 1]);
+  const b = newSave();
+  const bb = finishLap(b, 3, 10, ['가']);
+  assert.deepEqual([bb.advanced, b.retry], [false, ['가']]);
+  const r = new Round('가나');
+  r.hit('x'); r.hit('x');
+  assert.equal(r.failed, false);
+  r.hit('x');
+  assert.ok(r.failed);
+  // 보스전도 같다: 하트를 다 잃은 문항이 없으면 물리친 것
+  const c = newSave();
+  c.stage = BOSS_STAGE;
+  c.runLaps = 3;
+  const out = finishBoss(c, 2, 100, 1, '7회', []);
+  assert.deepEqual([out.cleared, out.grade, c.crowns, c.bossWrong], [true, 'A', 1, 0]);
+});
+
+test('문항 도중 상태를 저장하고 되살린다', () => {
+  const r = new Round('학교에 가요');
+  r.blankOut(1, () => 0.5);
+  r.hit('x');
+  const p = r.partial;
+  assert.deepEqual([p.given.length, p.filled.length, p.hearts, p.misses], [4, 0, 2, 1]);
+  const r2 = new Round('학교에 가요');
+  r2.restorePartial(p);
+  assert.deepEqual(r2.upcoming(9), ['학']);
+  assert.equal(r2.hearts, 2);
+  assert.ok(r2.hit('학').ok);
+  assert.ok(r2.done);
+  const r3 = new Round('가나다');
+  r3.hit('가');
+  const q = r3.partial;
+  assert.deepEqual(q.filled, [0]);
+  const snap = reviveSnapshot({ setKey: 'k', stage: 0, lap: 0, index: 0, results: [], partial: q, savedAt: 1 });
+  assert.ok(snap && snap.partial && snap.partial.filled[0] === 0);
+  assert.equal(reviveSnapshot({ setKey: 'k', index: 0, results: [] }), null);
+});
+
+test('자모 차이와 생김새가 비슷한 글자', () => {
+  assert.deepEqual(jamoDiff('맷', '맺'), ['jong']);
+  assert.deepEqual(jamoDiff('맷', '멧'), ['jung']);
+  assert.deepEqual(jamoDiff('맷', '맷'), []);
+  assert.ok(looksAlike('맷', '맺')); // ㅅ↔ㅈ 받침은 생김새가 비슷
+  assert.ok(looksAlike('꽉', '꽉'));
+  assert.ok(looksAlike('갑', '깝')); // ㄱ↔ㄲ
+  assert.equal(looksAlike('맷', '맨'), false); // ㅅ↔ㄴ 은 다르다
+  assert.equal(looksAlike('맷', '멧'), false); // ㅐ↔ㅔ 는 받아쓰기의 핵심이라 봐주지 않는다
+  assert.equal(looksAlike('맷', '맛'), false);
+  assert.ok(decoysFor('맷').includes('맺') && !decoysFor('맷').includes('맷'));
+});
+
+test('응원 메시지', () => {
+  assert.ok(cheerFor(2, () => 0).length > 0);
+  assert.ok(cheerFor(1, () => 0).includes('하트 1개'));
+  assert.ok(cheerFor(0).includes('힌트'));
+  assert.ok(hopeFor(0, 10).includes('대단'));
+  assert.ok(hopeFor(3, 10).includes('7문제'));
 });
