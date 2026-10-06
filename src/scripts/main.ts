@@ -328,6 +328,7 @@ function updateHint(): void {
 
 let lastSpeak: SpeakMethod | null = null;
 let peekTimer = 0;
+let reads = 0; // 문제를 읽어 준 횟수(검수용)
 
 /**
  * 문제를 읽어 준다: 녹음 → 내장 음성 → 온라인 음성. 모두 안 되면 잠깐 글로 보여 준다(보고 기억해서 쓰기).
@@ -335,6 +336,7 @@ let peekTimer = 0;
 function readQuestion(): void {
   const text = game.round.text;
   const my = game.round;
+  reads++;
   void getRecording(text).then((rec) => {
     if (game.round !== my) return;
     return speak(text, () => showPeek(text), rec).then((m) => {
@@ -379,6 +381,7 @@ function startGame(resume = false): void {
   const themeName = applyLook();
   stage.setDrift(diff.drift);
   stage.clearBalloons();
+  stage.setSpeaker(true);
   setState('playing');
 
   $('lap-title').textContent = resumed ? `▶ ${game.index + 2}번 문제부터 이어서` : `${def.emoji} ${def.name}`;
@@ -429,6 +432,14 @@ function flyLetter(b: Balloon, index: number): void {
 
 function onHit(b: Balloon): void {
   const at = stage.screenPos(b);
+  if (b.speaker) {
+    // 🔊 다시 듣기 풍선: 터지지 않고 문제를 다시 읽어 준다
+    sfx.bonus();
+    stage.nudge(b);
+    popup('🔊 다시 들어요', at.x, at.y - 30, 'bonus');
+    readQuestion();
+    return;
+  }
   if (b.bonus) {
     game.score += BONUS_POINTS;
     addCoins(5);
@@ -538,6 +549,7 @@ function showClear(): void {
 /** 한 바퀴를 끝냈을 때: 다 맞혔으면 다음 단계, 아니면 1번부터 다시 */
 function showResult(): void {
   setState('result');
+  stage.setSpeaker(false);
   stage.clearBalloons();
   releaseLock();
   const def = STAGES[save.stage];
@@ -639,6 +651,7 @@ async function startBoss(resume = false): Promise<void> {
   document.body.style.background = theme.sky;
   stage.setLoadout(save.equipped, gunSize());
   stage.setStickers(save.stickers);
+  stage.setSpeaker(false);
   stage.clearBalloons();
   bossMax = questions.list.reduce((n, q) => n + new Round(q).targetCount, 0);
   // 이어하기: 이미 되찾은 글자만큼 보스 체력이 깎여 있다
@@ -1316,6 +1329,7 @@ function toMenu(): void {
 }
 
 function decorate(): void {
+  stage.setSpeaker(false);
   stage.clearBalloons();
   for (const ch of '받아쓰기풍선') stage.spawn(ch);
 }
@@ -1618,7 +1632,7 @@ function shoot(ndc: { x: number; y: number } | null): void {
   if (!hit) return badShot();
   // 물줄기가 날아가 닿는 순간에 터진다
   setTimeout(() => {
-    if (state === 'playing' && (stage.balloons.includes(hit) || stage.bonus === hit)) onHit(hit);
+    if (state === 'playing' && (stage.balloons.includes(hit) || stage.bonus === hit || stage.speaker === hit)) onHit(hit);
   }, HIT_DELAY);
 }
 
@@ -1809,6 +1823,7 @@ async function boot(): Promise<void> {
     get boss() { return { hp: bossHp, max: bossMax, busy, fallback: padFallback, timeLeft }; },
     get calm() { return performance.now() < calmUntil; },
     get lastSpeak() { return lastSpeak; },
+    get reads() { return reads; },
     get sets() { return sets; },
     get current() { return current; },
     chooseSet(id: string) { const x = sets.find((y) => y.id === id); if (x) chooseSet(x); return !!x; },

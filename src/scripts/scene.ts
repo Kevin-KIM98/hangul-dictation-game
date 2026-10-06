@@ -22,6 +22,8 @@ export interface Balloon {
   /** 반지름 배율 */
   size: number;
   bonus: boolean;
+  /** 🔊 다시 듣기 풍선: 맞히면 문제를 다시 읽어 주고 터지지 않는다 */
+  speaker: boolean;
 }
 
 function labelTexture(ch: string): THREE.CanvasTexture {
@@ -88,14 +90,14 @@ const RECOIL_Q = new THREE.Quaternion();
 const RECOIL_E = new THREE.Euler();
 const SHOT_TIME = 0.2;
 
-function emojiTexture(emoji: string): THREE.CanvasTexture {
+function emojiTexture(emoji: string, size = 64): THREE.CanvasTexture {
   const c = document.createElement('canvas');
-  c.width = c.height = 64;
+  c.width = c.height = size;
   const g = c.getContext('2d')!;
-  g.font = '50px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif';
+  g.font = `${Math.round(size * 0.78)}px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif`;
   g.textAlign = 'center';
   g.textBaseline = 'middle';
-  g.fillText(emoji, 32, 36);
+  g.fillText(emoji, size / 2, size * 0.56);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
@@ -128,6 +130,7 @@ export class Stage {
   portrait = false;
   balloons: Balloon[] = [];
   bonus: Balloon | null = null;
+  speaker: Balloon | null = null;
 
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
@@ -168,6 +171,7 @@ export class Stage {
   private pMat!: THREE.PointsMaterial;
   private pTextures = new Map<string, THREE.Texture>();
   private goldMat = new THREE.MeshStandardMaterial({ color: 0xffd23f, roughness: 0.2, metalness: 0.3, emissive: 0x8a5a00 });
+  private speakerMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.35, emissive: 0xdfe9ff, emissiveIntensity: 0.3 });
   private fireworks: { at: number; pos: THREE.Vector3 }[] = [];
   private recoil = 0;
   private aimNdc = new THREE.Vector2(); // 총이 겨누는 화면 위치
@@ -261,6 +265,48 @@ export class Stage {
     this.yaw = 0;
     this.pitch = this.basePitch;
     for (const b of this.balloons) this.place(b);
+    if (this.speaker) this.placeSpeaker(this.speaker);
+  }
+
+  /** 🔊 풍선은 왼쪽 아래, 글자 풍선 띠보다 조금 낮은 자리에 고정 */
+  private placeSpeaker(b: Balloon): void {
+    const yaw = -this.yawSpread * (this.portrait ? 0.8 : 0.95);
+    const pitch = this.pitchMin - 0.1;
+    const d = 11;
+    b.base.set(Math.sin(yaw) * Math.cos(pitch) * d, EYE.y + Math.sin(pitch) * d, -Math.cos(yaw) * Math.cos(pitch) * d);
+    b.group.position.copy(b.base);
+  }
+
+  /** 다시 듣기 풍선을 보이거나 치운다 */
+  setSpeaker(on: boolean): void {
+    if (!on) {
+      if (this.speaker) this.remove(this.speaker);
+      return;
+    }
+    if (this.speaker) return;
+    const b = this.spawn('🔊');
+    this.balloons = this.balloons.filter((x) => x !== b);
+    (b.group.children[1] as THREE.Mesh).material = this.speakerMat;
+    (b.group.children[2] as THREE.Mesh).material = this.speakerMat;
+    b.label.material.map?.dispose();
+    b.label.material.map = emojiTexture('🔊', 192);
+    b.label.material.needsUpdate = true;
+    b.label.scale.setScalar(1.6);
+    b.halo.visible = true;
+    b.color = 0xd4f1ff;
+    b.size = 0.85;
+    b.speaker = true;
+    b.phase = 0;
+    this.placeSpeaker(b);
+    this.speaker = b;
+  }
+
+  /** 다시 듣기 풍선을 맞혔을 때: 터지지 않고 통통 튄다 */
+  nudge(b: Balloon): void {
+    b.wobble = 0.5;
+    b.age = 0.2; // 살짝 작아졌다 커진다
+    this.burst(b.group.position, 0x9be7ff, 12, 0.8);
+    this.ring(b.group.position, 0xd4f1ff);
   }
 
   /** 바퀴마다 바뀌는 배경. 고른 테마를 돌려준다 */
@@ -384,7 +430,7 @@ export class Stage {
       // 화면에서 겹치지 않도록 같은 거리로 투영해 간격을 잰다
       const flat = p.clone().sub(EYE).setLength(14);
       let gap = Infinity;
-      for (const o of this.balloons) {
+      for (const o of this.speaker ? [...this.balloons, this.speaker] : this.balloons) {
         if (o !== b) gap = Math.min(gap, o.base.clone().sub(EYE).setLength(14).distanceTo(flat));
       }
       if (gap > bestGap) {
@@ -428,6 +474,7 @@ export class Stage {
       hint: false,
       size: 1,
       bonus: false,
+      speaker: false,
     };
     this.place(b);
     this.balloons.push(b);
@@ -436,6 +483,7 @@ export class Stage {
 
   private remove(b: Balloon): void {
     if (b === this.bonus) this.bonus = null;
+    if (b === this.speaker) this.speaker = null;
     this.scene.remove(b.group);
     b.label.material.map?.dispose();
     b.label.material.dispose();
@@ -492,6 +540,14 @@ export class Stage {
     for (const b of this.balloons) b.hint = ch !== null && b.ch === ch;
   }
 
+  /** 쏠 수 있는 모든 표적: 글자 풍선 + 보너스 별 + 🔊 다시 듣기 */
+  private targets(): Balloon[] {
+    const out = this.balloons.slice();
+    if (this.bonus) out.push(this.bonus);
+    if (this.speaker) out.push(this.speaker);
+    return out;
+  }
+
   /** 풍선의 화면 좌표(px) */
   screenPos(b: Balloon): { x: number; y: number } {
     this.camera.rotation.set(this.pitch, this.yaw, 0);
@@ -515,7 +571,7 @@ export class Stage {
     let hit: Balloon | null = null;
     let bestRatio = tolerance;
     const rel = new THREE.Vector3();
-    for (const b of this.bonus ? [...this.balloons, this.bonus] : this.balloons) {
+    for (const b of this.targets()) {
       rel.copy(b.group.position).sub(origin);
       const t = rel.dot(direction);
       if (t <= 0) continue;
@@ -599,18 +655,18 @@ export class Stage {
       }
     }
     const toEye = new THREE.Vector3();
-    for (const b of this.bonus ? [...this.balloons, this.bonus] : this.balloons) {
+    for (const b of this.targets()) {
       b.age += dt;
       const grow = Math.min(1, b.age / 0.35);
       let s = this.radius * b.size * (1 - Math.pow(1 - grow, 3)) * (1 + 0.12 * Math.sin(grow * Math.PI));
       if (b.hint) s *= 1 + 0.08 * Math.sin(t * 7);
       b.group.scale.setScalar(Math.max(s, 0.001));
-      b.halo.visible = b.hint || b.bonus;
+      b.halo.visible = b.hint || b.bonus || b.speaker;
       if (b.bonus) b.group.rotation.z = Math.sin(t * 5) * 0.15;
 
       const sway = 0.45 + (this.drift - 1) * 0.3;
-      let x = b.base.x + (b.bonus ? 0 : Math.sin(t * 0.55 * this.drift + b.phase) * sway);
-      const y = b.base.y + Math.sin(t * 0.8 * this.drift + b.phase * 2) * (0.35 + (this.drift - 1) * 0.15);
+      let x = b.base.x + (b.bonus || b.speaker ? 0 : Math.sin(t * 0.55 * this.drift + b.phase) * sway);
+      const y = b.base.y + (b.speaker ? Math.sin(t * 1.4) * 0.12 : Math.sin(t * 0.8 * this.drift + b.phase * 2) * (0.35 + (this.drift - 1) * 0.15));
       if (b.wobble > 0) {
         b.wobble -= dt;
         x += Math.sin(t * 45) * 0.3 * Math.max(b.wobble, 0);
