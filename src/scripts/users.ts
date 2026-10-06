@@ -371,12 +371,12 @@ export function decodeBrag(text: string): PlayerRecord | null {
   return decodeRecords(text)?.[0] ?? null;
 }
 
-type Packed = [string, number, number, number, string, number, number, number, number, [number, number, string, number, number][], string, string];
+type Packed = [string, number, number, number, string, number, number, number, number, [number, number, string, number, number, string?][], string, string];
 
 function pack(r: PlayerRecord): Packed {
   return [
     r.name, r.crowns, r.best, r.bossBest, r.bossGrade, r.bossClears, r.totalLaps, r.stickers, r.updated,
-    r.wins.slice(-WINS_KEPT).map((w) => [w.nth, w.laps, w.grade, w.score, w.at]),
+    r.wins.slice(-WINS_KEPT).map((w) => (w.set ? [w.nth, w.laps, w.grade, w.score, w.at, w.set] : [w.nth, w.laps, w.grade, w.score, w.at])),
     r.id, r.school,
   ];
 }
@@ -403,7 +403,7 @@ function unpack(raw: unknown): PlayerRecord | null {
     updated: num(updated),
     wins: Array.isArray(wins)
       ? wins
-          .map((w) => (Array.isArray(w) ? reviveWin({ nth: w[0], laps: w[1], grade: w[2], score: w[3], at: w[4] }) : null))
+          .map((w) => (Array.isArray(w) ? reviveWin({ nth: w[0], laps: w[1], grade: w[2], score: w[3], at: w[4], set: w[5] }) : null))
           .filter((w): w is Win => !!w)
       : [],
     friend: true,

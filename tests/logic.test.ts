@@ -5,7 +5,7 @@ import { compose, decompose, distractorsFor, similar } from '../src/scripts/hang
 import { Game, Round } from '../src/scripts/round.ts';
 import {
   BOSS_STAGE, ITEMS, MIN_WIN_LAPS, RECKLESS_SHOTS, STAGES, applyQuestionSet, applyWarning, bossPhase, bossTime, buy, difficulty, equip, finishBoss, finishLap,
-  canResume, gradeOf, newSave, recordBadShot, reviveSave, reviveSnapshot, winPoints,
+  canResume, gradeOf, newSave, recordBadShot, reviveSave, reviveSnapshot, setKeyOf, winPoints,
 } from '../src/scripts/campaign.ts';
 
 test('음절 분해·조합', () => {
@@ -122,11 +122,13 @@ test('최종 시험: 등급·왕관·기록, 끝나면 처음 단계로', () => 
   s.stage = BOSS_STAGE;
   s.lap = 2;
   s.runLaps = 3;
-  const a = finishBoss(s, 0, 300, 77);
+  const a = finishBoss(s, 0, 300, 77, '7회 [4. 감동을 나누어요]');
   assert.deepEqual([a.grade, a.perfect, a.newBest], ['S', true, true]);
+  assert.equal(a.win.set, '7회 [4. 감동을 나누어요]');
+  assert.equal(reviveSave({ wins: [a.win] }).wins[0].set, a.win.set);
   assert.deepEqual([s.stage, s.lap, s.crowns, s.bossBest, s.bossGrade, s.bossClears, s.level], [0, 0, 1, 300, 'S', 1, 3]);
   assert.ok(a.coins.some((c) => c.label.includes('왕관')));
-  assert.deepEqual(a.win, { nth: 1, laps: 4, grade: 'S', score: 300, at: 77 });
+  assert.deepEqual(a.win, { nth: 1, laps: 4, grade: 'S', score: 300, at: 77, set: '7회 [4. 감동을 나누어요]' });
   assert.ok(a.coins.some((c) => c.label.includes('한 번에')));
   assert.deepEqual([s.runLaps, s.wins.length], [0, 1]);
   s.stage = BOSS_STAGE;
@@ -155,7 +157,7 @@ test('난이도: 많이 틀리면 쉬워진다', () => {
   assert.ok(difficulty(1, 'full').balloons[1] < difficulty(5, 'full').balloons[1]);
 });
 
-test('문제가 바뀌면 진행만 처음으로, 코인은 유지', () => {
+test('회차를 바꾸면 새 회차는 처음부터, 돌아오면 하던 데서. 코인은 유지', () => {
   const s = newSave();
   assert.equal(applyQuestionSet(s, ['가', '나']), false); // 첫 적용
   finishLap(s, 0, 10);
@@ -163,7 +165,15 @@ test('문제가 바뀌면 진행만 처음으로, 코인은 유지', () => {
   assert.equal(applyQuestionSet(s, ['가', '나']), false);
   assert.equal(s.stage, 1);
   assert.equal(applyQuestionSet(s, ['다', '라']), true);
-  assert.deepEqual([s.stage, s.lap, s.coins], [0, 0, coins]);
+  assert.deepEqual([s.stage, s.lap, s.level, s.coins], [0, 0, 2, coins]);
+  finishLap(s, 5, 10); // 둘째 회차에서 한 바퀴(틀림)
+  assert.deepEqual([s.stage, s.lap], [0, 1]);
+  assert.equal(applyQuestionSet(s, ['가', '나']), true); // 첫 회차로 돌아오면 2단계·난이도 3
+  assert.deepEqual([s.stage, s.lap, s.level], [1, 0, 3]);
+  assert.equal(applyQuestionSet(s, ['다', '라']), true);
+  assert.deepEqual([s.stage, s.lap, s.lastWrong], [0, 1, 5]);
+  const back = reviveSave(JSON.parse(JSON.stringify(s)));
+  assert.equal(back.sets[setKeyOf(['가', '나'])].stage, 1);
 });
 
 test('상점: 코인이 모자라면 못 사고, 사면 바로 장착', () => {

@@ -103,6 +103,20 @@ export interface Save {
   warnings: number;
   /** 하다 만 바퀴(이어하기). 없으면 null */
   resume: LapSnapshot | null;
+  /** 고른 회차(문제 묶음) id */
+  setId: string;
+  /** 다른 회차의 진행(회차를 바꿔도 잊지 않는다). 키는 setKey */
+  sets: Record<string, SetProgress>;
+}
+
+/** 회차마다 따로 가는 진행 */
+export interface SetProgress {
+  stage: number;
+  lap: number;
+  level: number;
+  lastWrong: number | null;
+  runLaps: number;
+  resume: LapSnapshot | null;
 }
 
 /** 바퀴 도중의 진행: 문항을 하나 끝낼 때마다 저장한다 */
@@ -165,6 +179,8 @@ export interface Win {
   score: number;
   /** 우승 시각 */
   at: number;
+  /** 어느 회차였는지(제목) */
+  set?: string;
 }
 
 export function newSave(): Save {
@@ -188,6 +204,8 @@ export function newSave(): Save {
     wins: [],
     warnings: 0,
     resume: null,
+    setId: '',
+    sets: {},
   };
 }
 
@@ -197,7 +215,23 @@ export function reviveWin(raw: unknown): Win | null {
   const r = raw as Partial<Win>;
   const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0);
   if (!GRADES.includes(r.grade as Grade)) return null;
-  return { nth: num(r.nth), laps: Math.max(1, num(r.laps)), grade: r.grade as Grade, score: num(r.score), at: num(r.at) };
+  const w: Win = { nth: num(r.nth), laps: Math.max(1, num(r.laps)), grade: r.grade as Grade, score: num(r.score), at: num(r.at) };
+  if (typeof r.set === 'string' && r.set) w.set = r.set.slice(0, 30);
+  return w;
+}
+
+function reviveProgress(raw: unknown): SetProgress | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Partial<SetProgress>;
+  const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+  return {
+    stage: Math.min(STAGES.length - 1, Math.max(0, Math.floor(num(r.stage, 0)))),
+    lap: Math.max(0, Math.floor(num(r.lap, 0))),
+    level: Math.min(MAX_LEVEL, Math.max(MIN_LEVEL, Math.floor(num(r.level, 2)))),
+    lastWrong: typeof r.lastWrong === 'number' ? r.lastWrong : null,
+    runLaps: Math.max(0, Math.floor(num(r.runLaps, 0))),
+    resume: reviveSnapshot(r.resume),
+  };
 }
 
 /** 저장된 값이 깨졌거나 옛 버전이어도 안전하게 읽는다 */
@@ -228,7 +262,15 @@ export function reviveSave(raw: unknown): Save {
     wins: Array.isArray(r.wins) ? r.wins.map(reviveWin).filter((w): w is Win => !!w) : [],
     warnings: Math.max(0, Math.floor(num(r.warnings, 0))),
     resume: reviveSnapshot(r.resume),
+    setId: typeof r.setId === 'string' ? r.setId : '',
+    sets: {},
   };
+  if (r.sets && typeof r.sets === 'object') {
+    for (const [k, v] of Object.entries(r.sets as Record<string, unknown>)) {
+      const p = reviveProgress(v);
+      if (p) save.sets[k] = p;
+    }
+  }
   for (const kind of ['skin', 'stream', 'pop'] as const) {
     const id = r.equipped?.[kind];
     if (typeof id === 'string' && save.owned.includes(id) && id.startsWith(kind)) save.equipped[kind] = id;
@@ -242,17 +284,26 @@ export function setKeyOf(questions: string[]): string {
   return `${questions.length}:${h >>> 0}`;
 }
 
-/** 문제 묶음이 바뀌었으면 진행(단계·바퀴)을 처음으로. 코인·아이템은 그대로 */
+/**
+ * 문제 묶음(회차)을 바꾼다: 지금 회차의 진행(단계·바퀴·난이도·이어하기)은 기억해 두고,
+ * 새 회차는 전에 하던 데서 이어간다(처음이면 1단계부터). 코인·아이템·왕관은 그대로.
+ * 바뀌었으면 true.
+ */
 export function applyQuestionSet(save: Save, questions: string[]): boolean {
   const key = setKeyOf(questions);
   if (save.setKey === key) return false;
+  if (save.setKey) {
+    save.sets[save.setKey] = { stage: save.stage, lap: save.lap, level: save.level, lastWrong: save.lastWrong, runLaps: save.runLaps, resume: save.resume };
+  }
   const first = save.setKey === '';
+  const next = save.sets[key];
   save.setKey = key;
-  save.stage = 0;
-  save.lap = 0;
-  save.lastWrong = null;
-  save.level = 2;
-  save.resume = null;
+  save.stage = next?.stage ?? 0;
+  save.lap = next?.lap ?? 0;
+  save.level = next?.level ?? 2;
+  save.lastWrong = next?.lastWrong ?? null;
+  save.runLaps = next?.runLaps ?? 0;
+  save.resume = next?.resume ?? null;
   return !first;
 }
 
@@ -425,7 +476,7 @@ export interface BossOutcome {
  * 최종 시험을 끝냈을 때: 왕관을 받고 처음 단계로 돌아간다.
  * wrongShots: 틀리게 쓴(또는 시간을 넘긴) 횟수.
  */
-export function finishBoss(save: Save, wrongShots: number, score: number, now: number = Date.now()): BossOutcome {
+export function finishBoss(save: Save, wrongShots: number, score: number, now: number = Date.now(), setTitle = ''): BossOutcome {
   const grade = gradeOf(wrongShots);
   const perfect = wrongShots === 0;
   const coins: BossOutcome['coins'] = [{ label: '글자 도둑 대왕을 물리쳤어요', amount: 100 }];
@@ -446,6 +497,7 @@ export function finishBoss(save: Save, wrongShots: number, score: number, now: n
   save.totalLaps++;
   save.crowns++;
   const win: Win = { nth: save.bossClears, laps: Math.max(MIN_WIN_LAPS, save.runLaps + 1), grade, score, at: now };
+  if (setTitle) win.set = setTitle;
   save.wins.push(win);
   if (win.laps === MIN_WIN_LAPS) coins.push({ label: '⚡ 한 번에 우승!', amount: 150 });
   save.runLaps = 0;

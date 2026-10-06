@@ -145,6 +145,7 @@
           <button id="fame-open" class="ghost" type="button">🏆 명예의 전당</button>
           <button id="logout" class="ghost" type="button">바꾸기</button>
         </div>
+        <button id="set-pick" class="ghost strong setpick" type="button">📚 회차 고르기 ▾</button>
         <button id="continue" class="big continue" type="button" hidden>▶ 이어하기</button>
         <button id="start" class="big" type="button">게임 시작</button>
         <p id="qstatus" class="status"></p>
@@ -164,13 +165,26 @@
           <input id="file" type="file" accept=".txt,.json,text/plain,application/json" hidden />
           <button id="reset" class="ghost" type="button" hidden>기본 문제로</button>
         </div>
-        <p class="note">받아쓰기 급수표를 찍어 올리거나, 한 줄에 한 문제씩 적어요</p>
+        <p class="note">급수표를 찍어 올리거나 한 줄에 한 문제씩 적어요. "7회 [제목]" 줄을 넣으면 회차가 나뉘어요</p>
+      </div>
+    </section>
+
+    <section id="rounds" class="overlay">
+      <div class="card wide">
+        <h2>📚 회차 고르기</h2>
+        <p class="status">받아쓰기할 회차를 눌러요. 회차마다 단계·바퀴가 따로 이어져요.</p>
+        <ol id="rounds-list"></ol>
+        <div class="upload">
+          <button id="rounds-write" class="ghost strong" type="button">✏️ 새 회차 만들기</button>
+          <button id="rounds-close" class="ghost" type="button">닫기</button>
+        </div>
       </div>
     </section>
 
     <section id="editor" class="overlay">
       <div class="card wide">
         <h2>문제 만들기</h2>
+        <input id="ed-title" class="ed-title" type="text" maxlength="30" placeholder="회차 이름 (예: 7회 [4. 감동을 나누어요])" autocomplete="off" />
         <div id="ed-photo">
           <canvas id="ed-canvas"></canvas>
           <div class="upload">
@@ -399,7 +413,8 @@
         background: rgb(29 43 83 / 0.28);
       }
       body[data-state='editor'] #editor, body[data-state='shop'] #shop, body[data-state='menu'] #menu, body[data-state='paused'] #paused,
-      body[data-state='result'] #result, body[data-state='login'] #login, body[data-state='fame'] #fame, body[data-state='profile'] #profile { display: grid; }
+      body[data-state='result'] #result, body[data-state='login'] #login, body[data-state='fame'] #fame, body[data-state='profile'] #profile,
+      body[data-state='rounds'] #rounds { display: grid; }
       .card {
         margin: auto; width: min(100%, 440px); text-align: center;
         background: var(--cream); border: 4px solid var(--ink); border-radius: 30px;
@@ -500,6 +515,22 @@
       #new-msg, #profile-msg { color: var(--coral); margin-top: 8px; }
       #new-msg:empty, #profile-msg:empty { display: none; }
       .big.continue { background: var(--mint); color: var(--ink); margin-bottom: 10px; }
+      .setpick { display: block; width: 100%; margin: 0 0 10px; font-size: 18px; white-space: normal; }
+      .ed-title {
+        display: block; width: 100%; margin: 0 0 8px; padding: 8px 12px; min-height: 48px; font: 19px 'Jua', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
+        color: var(--ink); background: #fff; border: var(--edge); border-radius: 14px; user-select: text; -webkit-user-select: text;
+      }
+      #rounds-list { list-style: none; margin: 10px 0 12px; padding: 0; text-align: left; max-height: 50vh; overflow-y: auto; }
+      .round { display: flex; gap: 6px; align-items: stretch; margin-bottom: 8px; }
+      .round-main {
+        flex: 1; min-width: 0; display: grid; gap: 2px; text-align: left; padding: 10px 14px;
+        background: #fff; border: var(--edge); border-radius: 14px; box-shadow: 0 3px 0 var(--ink);
+      }
+      .round.on .round-main { background: var(--sun); }
+      .round-main:active { translate: 0 3px; box-shadow: none; }
+      .round-title { font-size: 19px; }
+      .round-detail { font-size: 14px; color: #5a6a92; }
+      .round-btn { min-width: 46px; font-size: 18px; background: var(--cream); border: var(--edge); border-radius: 12px; }
       #login-form .big { margin-top: 2px; }
       #login-msg:empty { display: none; }
       #login-msg { color: var(--coral); margin-top: 0; }

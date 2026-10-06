@@ -2,13 +2,13 @@
 import { Stage, type Balloon } from './scene.ts';
 import { Game, MAX_HEARTS, Round } from './round.ts';
 import { distractorsFor } from './hangul.ts';
-import { loadQuestions, parseQuestions, resetQuestions, saveQuestions } from './questions.ts';
+import { addSets, loadSets, parseQuestions, parseSets, removeSet, resetSets, updateSet, type QuestionSet } from './questions.ts';
 import { sfx, speak, stopSpeaking, unlock, type SpeakMethod } from './audio.ts';
 import { canRecord, deleteRecording, getRecording, listRecordings, startRecording, saveRecording, clipKey, type Recorder } from './recordings.ts';
 import { IN_APP_NAME, externalUrl, inAppBrowser } from './browser.ts';
 import {
   applyQuestionSet, applyWarning, blankCount, bossPhase, bossTime, buy, canResume, difficulty, equip, finishBoss, finishLap, newSave,
-  recordBadShot, themeIndex, timeLimit, winPoints, ITEMS, MIN_WIN_LAPS, RECKLESS_LOCK_MS, STAGES,
+  recordBadShot, setKeyOf, themeIndex, timeLimit, winPoints, ITEMS, MIN_WIN_LAPS, RECKLESS_LOCK_MS, STAGES,
   type Difficulty, type ItemKind, type LapSnapshot, type Mode, type Save,
 } from './campaign.ts';
 import {
@@ -19,7 +19,7 @@ import { Pad } from './pad.ts';
 import { BossView } from './boss.ts';
 import { drawBragCard, shareRecord } from './share.ts';
 
-type State = 'login' | 'profile' | 'menu' | 'playing' | 'boss' | 'between' | 'paused' | 'result' | 'editor' | 'shop' | 'fame';
+type State = 'login' | 'profile' | 'rounds' | 'menu' | 'playing' | 'boss' | 'between' | 'paused' | 'result' | 'editor' | 'shop' | 'fame';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>('stage');
@@ -58,7 +58,23 @@ function persist(): void {
 let stage: Stage;
 let game: Game;
 let state: State = 'menu';
-let questions = loadQuestions();
+let sets = loadSets();
+let current: QuestionSet = sets[0];
+/** 고른 회차의 문제(예전 코드와 같은 모양으로) */
+const questions = {
+  get list() {
+    return current.questions;
+  },
+  get custom() {
+    return !!current.custom;
+  },
+};
+
+/** 저장된 회차 id 로 고른다. 없으면 첫 회차 */
+function pickSet(): QuestionSet {
+  current = sets.find((x) => x.id === save.setId) ?? sets[0];
+  return current;
+}
 let lastShot = 0;
 let lastCorrect = 0;
 let lockFailed = false;
@@ -173,12 +189,12 @@ function paintHud(): void {
 }
 
 function paintMenu(): void {
-  $('qstatus').textContent = questions.custom
-    ? `올린 문제 ${questions.list.length}개로 시작해요`
-    : `기본 문제 ${questions.list.length}개로 시작해요`;
-  $('reset').hidden = !questions.custom;
-  // 문제가 바뀌었으면 1단계부터 새로 시작한다(코인·아이템은 그대로)
+  $('set-pick').textContent = `📚 ${current.title} ▾`;
+  $('qstatus').textContent = `${questions.custom ? '올린 문제' : '급수표'} · ${questions.list.length}문제`;
+  $('reset').hidden = !sets.some((x) => x.custom);
+  // 회차가 바뀌었으면 그 회차의 진행으로(코인·아이템은 그대로)
   applyQuestionSet(save, questions.list);
+  save.setId = current.id;
   persist();
   const def = STAGES[save.stage];
   const me = users.current();
@@ -842,7 +858,7 @@ function showBossResult(): void {
   boss.beaten();
   sfx.victory();
   stage.celebrate(24);
-  const out = finishBoss(save, game.wrongShots, game.score);
+  const out = finishBoss(save, game.wrongShots, game.score, Date.now(), current.title);
   lapCoins += out.total;
   save.stickers = [...new Set([...save.stickers, ...earned])];
   save.resume = null;
@@ -939,6 +955,7 @@ function showLogin(): void {
 /** 들어온 학생의 진행으로 바꾸고 메뉴로 */
 function enter(account: { id: string; name: string; save: Save }, fresh: boolean): void {
   save = account.save;
+  pickSet();
   unlock();
   toMenu();
   const who = displayName(account);
@@ -1303,17 +1320,114 @@ function decorate(): void {
   for (const ch of '받아쓰기풍선') stage.spawn(ch);
 }
 
+// ───────── 회차 고르기 ─────────
+
+function chooseSet(set: QuestionSet): void {
+  current = set;
+  save.setId = set.id;
+  toMenu();
+}
+
+function openRounds(): void {
+  renderRounds();
+  setState('rounds');
+}
+
+function renderRounds(): void {
+  const list = $('rounds-list');
+  list.replaceChildren(
+    ...sets.map((set) => {
+      const li = document.createElement('li');
+      li.className = `round${set.id === current.id ? ' on' : ''}`;
+      const main = document.createElement('button');
+      main.type = 'button';
+      main.className = 'round-main';
+      const title = document.createElement('span');
+      title.className = 'round-title';
+      title.textContent = `${set.custom ? '✏️ ' : ''}${set.title}`;
+      const detail = document.createElement('span');
+      detail.className = 'round-detail';
+      const key = setKeyOf(set.questions);
+      const p = set.id === current.id ? { stage: save.stage, lap: save.lap, resume: save.resume } : save.sets[key];
+      const wins = save.wins.filter((w) => w.set === set.title).length;
+      const parts = [`${set.questions.length}문제`];
+      if (p) parts.push(`${STAGES[p.stage].emoji} ${STAGES[p.stage].name} ${p.lap + 1}바퀴째`);
+      else parts.push('아직 안 했어요');
+      if (p?.resume) parts.push(`▶ ${p.resume.index + 1}번부터 이어하기`);
+      if (wins) parts.push(`🏆 우승 ${wins}회`);
+      detail.textContent = parts.join(' · ');
+      main.append(title, detail);
+      main.addEventListener('click', () => chooseSet(set));
+      li.append(main);
+      if (set.custom) {
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.className = 'round-btn';
+        edit.textContent = '✏️';
+        edit.title = '고치기';
+        edit.addEventListener('click', () => openEditor(set, false));
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'round-btn';
+        del.textContent = '🗑';
+        del.title = '지우기';
+        del.addEventListener('click', () => {
+          removeSet(set.id);
+          sets = loadSets();
+          if (current.id === set.id) current = sets[0];
+          toast(`'${set.title}' 회차를 지웠어요`, 1800);
+          renderRounds();
+        });
+        li.append(edit, del);
+      }
+      return li;
+    }),
+  );
+}
+
 // ───────── 문제 편집(사진으로 올리기 · 직접 쓰기) ─────────
+
+let editingId: string | null = null; // 고치는 중인 올린 회차
 
 let photo: ImageBitmap | null = null;
 let turns = 0;
 
-function openEditor(lines: string[], withPhoto: boolean): void {
-  $<HTMLTextAreaElement>('ed-text').value = lines.join('\n');
+/**
+ * set 이 올린 회차면 고치기, 급수표 회차면 그 문제를 채워 열되 저장하면 내 회차로 복사된다
+ * (급수표 문장을 녹음만 하고 [취소]해도 녹음은 남는다). null 이면 빈 회차 만들기.
+ */
+function openEditor(set: QuestionSet | null, withPhoto: boolean): void {
+  editingId = set?.custom ? set.id : null;
+  $<HTMLInputElement>('ed-title').value = set ? (set.custom ? set.title : `${set.title} (내 문제)`) : withPhoto ? '사진 문제' : '내 문제';
+  $<HTMLTextAreaElement>('ed-text').value = set ? set.questions.join('\n') : '';
   $('ed-photo').hidden = !withPhoto;
-  $('ed-status').textContent = withPhoto ? '글자가 똑바로 보이게 돌린 뒤 [글자 읽기]를 눌러요.' : '한 줄에 한 문제씩 적어요.';
+  $('ed-status').textContent = withPhoto
+    ? '글자가 똑바로 보이게 돌린 뒤 [글자 읽기]를 눌러요.'
+    : set && !set.custom
+      ? '급수표 문제예요. 🎙️ 녹음만 할 거면 녹음 뒤 [취소], 고쳐서 저장하면 내 회차로 복사돼요.'
+      : '한 줄에 한 문제씩 적어요. "7회 [제목]" 같은 줄을 넣으면 여러 회차로 나뉘어요.';
   setState('editor');
   void renderRecordings();
+}
+
+/** 편집 내용을 회차로 저장하고 첫 회차를 고른다 */
+function saveEditor(): void {
+  const text = $<HTMLTextAreaElement>('ed-text').value;
+  const title = $<HTMLInputElement>('ed-title').value.trim() || '내 문제';
+  const parsed = parseSets(text, title);
+  if (!parsed.length) return toast('문제가 없어요. 한 줄에 한 문제씩 적어 주세요.');
+  let chosen: QuestionSet | undefined;
+  if (editingId && parsed.length === 1) {
+    chosen = updateSet(editingId, title, parsed[0].questions) ?? undefined;
+  }
+  if (!chosen) {
+    if (parsed.length === 1) parsed[0].title = title;
+    chosen = addSets(parsed)[0];
+  }
+  sets = loadSets();
+  photo = null;
+  chooseSet(sets.find((x) => x.id === chosen!.id) ?? sets[0]);
+  toast(parsed.length > 1 ? `회차 ${parsed.length}개를 저장했어요!` : `'${chosen.title}' ${chosen.questions.length}문제를 저장했어요!`);
 }
 
 // ───────── 문제 녹음(보호자·선생님 목소리) ─────────
@@ -1418,7 +1532,7 @@ function bindEditor(): void {
     turns = 0;
     const { drawRotated } = await import('./ocr.ts');
     drawRotated(preview, photo, turns);
-    openEditor([], true);
+    openEditor(null, true);
   });
 
   $('ed-rotate').addEventListener('click', async () => {
@@ -1451,7 +1565,10 @@ function bindEditor(): void {
     }
   });
 
-  $('write').addEventListener('click', () => openEditor(questions.list, false));
+  $('write').addEventListener('click', () => openEditor(current, false));
+  $('set-pick').addEventListener('click', openRounds);
+  $('rounds-close').addEventListener('click', toMenu);
+  $('rounds-write').addEventListener('click', () => openEditor(null, false));
   let recDebounce = 0;
   text.addEventListener('input', () => {
     clearTimeout(recDebounce);
@@ -1463,15 +1580,7 @@ function bindEditor(): void {
     recordingFor = null;
     toMenu();
   });
-  $('ed-save').addEventListener('click', () => {
-    const list = parseQuestions(text.value);
-    if (!list.length) return toast('문제가 없어요. 한 줄에 한 문제씩 적어 주세요.');
-    saveQuestions(list);
-    questions = { list, custom: true };
-    photo = null;
-    toMenu();
-    toast(`문제 ${list.length}개를 저장했어요!`);
-  });
+  $('ed-save').addEventListener('click', saveEditor);
 }
 
 // ───────── 입력 ─────────
@@ -1624,17 +1733,19 @@ function bindInput(): void {
     const file = input.files?.[0];
     input.value = '';
     if (!file) return;
-    const list = parseQuestions(await file.text());
-    if (!list.length) return toast('문제를 찾지 못했어요. 한 줄에 한 문제씩 적어 주세요.');
-    saveQuestions(list);
-    questions = { list, custom: true };
-    paintMenu();
-    toast(`문제 ${list.length}개를 올렸어요!`);
+    const parsed = parseSets(await file.text(), file.name.replace(/\.[^.]+$/, '') || '올린 문제');
+    if (!parsed.length) return toast('문제를 찾지 못했어요. 한 줄에 한 문제씩 적어 주세요.');
+    const added = addSets(parsed);
+    sets = loadSets();
+    chooseSet(sets.find((x) => x.id === added[0].id) ?? sets[0]);
+    toast(parsed.length > 1 ? `회차 ${parsed.length}개를 올렸어요! 회차를 골라 시작해요` : `'${added[0].title}' ${added[0].questions.length}문제를 올렸어요!`, 3000);
   });
   $('reset').addEventListener('click', () => {
-    resetQuestions();
-    questions = loadQuestions();
-    paintMenu();
+    resetSets();
+    sets = loadSets();
+    current = sets[0];
+    toMenu();
+    toast('올린 문제를 지우고 급수표만 남겼어요', 2200);
   });
 
   document.addEventListener('visibilitychange', () => document.hidden && pause());
@@ -1660,6 +1771,7 @@ async function boot(): Promise<void> {
   decorate();
   const me = users.current();
   if (me) {
+    pickSet();
     setState('menu');
     paintMenu();
     if (bragArrived) {
@@ -1697,6 +1809,9 @@ async function boot(): Promise<void> {
     get boss() { return { hp: bossHp, max: bossMax, busy, fallback: padFallback, timeLeft }; },
     get calm() { return performance.now() < calmUntil; },
     get lastSpeak() { return lastSpeak; },
+    get sets() { return sets; },
+    get current() { return current; },
+    chooseSet(id: string) { const x = sets.find((y) => y.id === id); if (x) chooseSet(x); return !!x; },
     startGame,
     readQuestion,
     shootAt(x: number, y: number) { shoot({ x, y }); },
