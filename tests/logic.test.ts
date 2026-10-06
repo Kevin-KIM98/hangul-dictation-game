@@ -5,7 +5,7 @@ import { compose, decompose, distractorsFor, similar } from '../src/scripts/hang
 import { Game, Round } from '../src/scripts/round.ts';
 import {
   BOSS_STAGE, ITEMS, MIN_WIN_LAPS, RECKLESS_SHOTS, STAGES, applyQuestionSet, applyWarning, bossPhase, bossTime, buy, difficulty, equip, finishBoss, finishLap,
-  canResume, gradeOf, newSave, recordBadShot, reviveSave, reviveSnapshot, setKeyOf, winPoints,
+  canResume, gradeOf, lapQuestions, newSave, recordBadShot, reviveSave, reviveSnapshot, setKeyOf, winPoints,
 } from '../src/scripts/campaign.ts';
 
 test('음절 분해·조합', () => {
@@ -133,10 +133,14 @@ test('최종 시험: 등급·왕관·기록, 끝나면 처음 단계로', () => 
   assert.deepEqual([s.runLaps, s.wins.length], [0, 1]);
   s.stage = BOSS_STAGE;
   s.runLaps = 7;
-  const b = finishBoss(s, 4, 200);
-  assert.deepEqual([b.grade, b.newBest, s.bossBest, s.bossGrade, s.crowns], ['B', false, 300, 'S', 2]);
-  assert.deepEqual([b.win.nth, b.win.laps], [2, 8]);
+  const b = finishBoss(s, 4, 200, 1, '', ['가나', '다라']);
+  assert.equal(b.cleared, false); // 틀리면 왕관 없이 보스전 반복
+  assert.deepEqual([b.win, b.retryCount, s.crowns, s.stage, s.lap, s.bossWrong, s.retry], [null, 2, 1, BOSS_STAGE, 1, 4, ['가나', '다라']]);
   assert.ok(b.total < a.total);
+  const c = finishBoss(s, 0, 200, 2);
+  assert.ok(c.cleared);
+  assert.deepEqual([c.grade, c.newBest, s.bossBest, s.bossGrade, s.crowns, s.bossWrong, s.retry, s.stage], ['B', false, 300, 'S', 2, 0, [], 0]);
+  assert.deepEqual([c.win!.nth, c.win!.laps], [2, 9]); // 반복한 보스전도 바퀴 수에 들어간다
   assert.deepEqual([gradeOf(1), gradeOf(2), gradeOf(3), gradeOf(9)], ['A', 'A', 'B', 'C']);
 });
 
@@ -256,4 +260,27 @@ test('이어하기 저장은 같은 문제 묶음·단계·바퀴에서만 쓴�
   assert.equal(s.resume, null);
   assert.equal(reviveSnapshot({ setKey: 'x', index: 2, results: [{ text: '가' }] }), null);
   assert.equal(reviveSave({ resume: { setKey: 'k', stage: 0, lap: 0, index: 1, results: [{ text: '가' }] } }).resume?.index, 1);
+});
+
+test('틀린 바퀴 뒤에는 틀린 문제만 다시 하고, 다 맞히면 다음 단계', () => {
+  const s = newSave();
+  const all = ['가', '나', '다', '라'];
+  finishLap(s, 2, 10, ['나', '라']);
+  assert.deepEqual([s.stage, s.lap, s.retry], [0, 1, ['나', '라']]);
+  assert.deepEqual(lapQuestions(s, all), ['나', '라']);
+  assert.deepEqual(lapQuestions(s, ['마', '바']), ['마', '바']); // 문제가 바뀌면 전체
+  finishLap(s, 1, 10, ['라']);
+  assert.deepEqual(lapQuestions(s, all), ['라']);
+  const out = finishLap(s, 0, 10, []);
+  assert.ok(out.advanced);
+  assert.deepEqual([s.stage, s.retry], [1, []]);
+  assert.deepEqual(lapQuestions(s, all), all);
+  // 회차를 바꿔도 틀린 문제 목록을 기억한다
+  applyQuestionSet(s, all);
+  s.retry = ['가'];
+  applyQuestionSet(s, ['x', 'y']);
+  assert.deepEqual(s.retry, []);
+  applyQuestionSet(s, all);
+  assert.deepEqual(s.retry, ['가']);
+  assert.deepEqual(reviveSave({ retry: ['가', 3], bossWrong: 2 }).retry, ['가']);
 });

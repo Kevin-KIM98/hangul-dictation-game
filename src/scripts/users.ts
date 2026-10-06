@@ -62,6 +62,8 @@ interface Store {
 }
 
 export const USERS_KEY = 'dictation.users.v1';
+/** 저장이 깨졌을 때를 대비한 복사본(쓸 때마다 같이 쓴다) */
+export const USERS_BACKUP_KEY = 'dictation.users.backup';
 export const FRIENDS_KEY = 'dictation.friends.v1';
 /** 계정이 생기기 전 버전의 저장(첫 계정이 이어받는다) */
 export const LEGACY_SAVE_KEY = 'dictation.save.v2';
@@ -193,42 +195,84 @@ export class Users {
     this.store = this.load();
   }
 
-  private load(): Store {
-    const empty: Store = { v: 2, current: null, accounts: {} };
+  /** 마지막 저장이 실패했는가(사생활 보호 모드 등). 화면에서 한 번 알려 준다 */
+  writeFailed = false;
+
+  /**
+   * 저장된 계정 하나를 안전하게 읽는다. 규칙이 바뀌어도(아이디 길이 등) 계정을 버리지 않는다:
+   * 업데이트 때문에 학생이 사라지면 안 된다.
+   */
+  private static reviveAccount(key: string, a: Partial<Account> | null | undefined): Account | null {
+    if (!a || typeof a !== 'object' || typeof a.hash !== 'string' || typeof a.salt !== 'string') return null;
+    // v1: 이름이 곧 아이디였다. 이름을 아이디로 옮기고 이름도 그대로 둔다
+    const legacy = typeof a.id !== 'string';
+    const id = normalizeId(legacy ? String(a.name ?? key) : (a.id as string)) || normalizeId(key);
+    if (!id) return null;
+    return {
+      id,
+      name: typeof a.name === 'string' ? normalizeName(a.name) : '',
+      school: typeof a.school === 'string' ? normalizeName(a.school) : '',
+      salt: a.salt,
+      hash: a.hash,
+      created: typeof a.created === 'number' ? a.created : 0,
+      updated: typeof a.updated === 'number' ? a.updated : 0,
+      save: reviveSave(a.save),
+    };
+  }
+
+  private static parseStore(text: string | null): Store | null {
     try {
-      const raw = JSON.parse(this.storage.getItem(USERS_KEY) ?? 'null');
-      if (!raw || typeof raw !== 'object' || typeof raw.accounts !== 'object' || !raw.accounts) return empty;
+      const raw = JSON.parse(text ?? 'null');
+      if (!raw || typeof raw !== 'object' || typeof raw.accounts !== 'object' || !raw.accounts) return null;
       const accounts: Record<string, Account> = {};
       for (const [key, a] of Object.entries(raw.accounts as Record<string, Partial<Account>>)) {
-        if (!a || typeof a.hash !== 'string' || typeof a.salt !== 'string') continue;
-        // v1: 이름이 곧 아이디였다. 이름을 아이디로 옮기고 이름도 그대로 둔다
-        const legacy = typeof a.id !== 'string';
-        const id = legacy ? normalizeId(String(a.name ?? key)) : normalizeId(a.id as string);
-        if (idError(id)) continue;
-        accounts[idKey(id)] = {
-          id,
-          name: typeof a.name === 'string' ? normalizeName(a.name) : '',
-          school: typeof a.school === 'string' ? normalizeName(a.school) : '',
-          salt: a.salt,
-          hash: a.hash,
-          created: typeof a.created === 'number' ? a.created : 0,
-          updated: typeof a.updated === 'number' ? a.updated : 0,
-          save: reviveSave(a.save),
-        };
+        const acc = Users.reviveAccount(key, a);
+        if (acc) accounts[idKey(acc.id)] = acc;
       }
       const cur = typeof raw.current === 'string' ? idKey(raw.current) : null;
-      const current = cur && accounts[cur] ? cur : null;
-      return { v: 2, current, accounts };
+      return { v: 2, current: cur && accounts[cur] ? cur : null, accounts };
     } catch {
-      return empty;
+      return null;
     }
   }
 
+  private load(): Store {
+    const empty: Store = { v: 2, current: null, accounts: {} };
+    let main: Store | null = null;
+    let backup: Store | null = null;
+    try {
+      main = Users.parseStore(this.storage.getItem(USERS_KEY));
+      backup = Users.parseStore(this.storage.getItem(USERS_BACKUP_KEY));
+    } catch {
+      /* 저장소를 못 읽으면 빈 상태 */
+    }
+    if (!main && !backup) return empty;
+    // 둘 다 있으면 합친다: 어느 쪽에만 있는 계정도 잃지 않는다
+    const store = main ?? backup!;
+    if (main && backup) {
+      for (const [k, a] of Object.entries(backup.accounts)) if (!store.accounts[k]) store.accounts[k] = a;
+    }
+    return store;
+  }
+
+  /**
+   * 저장. 지금 저장소에 있는데 메모리에 없는 계정은 그대로 남긴다(읽기 실패 뒤 새 가입이
+   * 기존 학생을 덮어쓰지 않도록). 복사본도 같이 쓴다.
+   */
   private write(): void {
     try {
-      this.storage.setItem(USERS_KEY, JSON.stringify(this.store));
+      const onDisk = Users.parseStore(this.storage.getItem(USERS_KEY));
+      if (onDisk) for (const [k, a] of Object.entries(onDisk.accounts)) if (!this.store.accounts[k]) this.store.accounts[k] = a;
+      const text = JSON.stringify(this.store);
+      this.storage.setItem(USERS_KEY, text);
+      this.writeFailed = false;
+      try {
+        this.storage.setItem(USERS_BACKUP_KEY, text);
+      } catch {
+        /* 복사본은 못 써도 된다 */
+      }
     } catch {
-      /* 저장소를 못 쓰면 이번 실행만 */
+      this.writeFailed = true; // 저장소를 못 쓰면 이번 실행만
     }
   }
 

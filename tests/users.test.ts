@@ -5,7 +5,8 @@ import { createHash } from 'node:crypto';
 import { sha256 } from '../src/scripts/sha256.ts';
 import {
   Users, addFriend, bestWin, bragText, decodeBrag, decodeRecords, displayName, encodeBrag, encodeRecords, fameOf, fullName, idError,
-  loadFriends, nameError, passwordError, rankRecords, rankWinners, recordOf, LEGACY_SAVE_KEY, USERS_KEY, type StorageLike,
+  hashPassword, loadFriends, nameError, passwordError, rankRecords, rankWinners, recordOf, LEGACY_SAVE_KEY, USERS_BACKUP_KEY, USERS_KEY,
+  type StorageLike,
 } from '../src/scripts/users.ts';
 import { newSave, type Win } from '../src/scripts/campaign.ts';
 
@@ -147,4 +148,34 @@ test('친구 기록은 같은 이름이면 더 새 것만 남고, 명예의 전�
   assert.deepEqual(names, ['영희*', '민수']);
   assert.ok(addFriend(s, { ...fresh, updated: 3, wins: [{ nth: 1, laps: 4, grade: 'S', score: 1000, at: 3 }] }));
   assert.deepEqual(users.winners().map((w) => `${w.name}:${w.rank}`), ['영희:1']);
+});
+
+test('업데이트해도 학생이 사라지지 않는다: 한 글자 이름, 깨진 저장, 복사본', () => {
+  const acc = (name: string) => ({ name, salt: 'abc', hash: hashPassword('abc', '1234'), created: 1, updated: 2, save: { ...newSave(), coins: 5 } });
+  // 1) 옛 버전의 한 글자 이름도 그대로 살아 있고 그 아이디로 들어간다
+  const s = memory();
+  s.setItem(USERS_KEY, JSON.stringify({ v: 1, current: '민', accounts: { '민': acc('민'), '영희': acc('영희') } }));
+  let users = new Users(s);
+  assert.deepEqual(users.list().map((a) => a.id).sort(), ['민', '영희']);
+  assert.ok('save' in users.login('민', '1234'));
+  // 2) 저장이 깨져 못 읽어도 새 가입이 기존 학생을 덮어쓰지 않는다(복사본에서 되살린다)
+  const good = s.map.get(USERS_KEY)!;
+  s.setItem(USERS_BACKUP_KEY, good);
+  s.setItem(USERS_KEY, '{broken json');
+  users = new Users(s);
+  assert.deepEqual(users.list().map((a) => a.id).sort(), ['민', '영희']);
+  users.register('새친구', '1234');
+  assert.deepEqual(new Users(s).list().map((a) => a.id).sort(), ['민', '새친구', '영희']);
+  // 3) 메모리에 없는 계정이 저장소에 생겨도(다른 탭에서 가입) 쓸 때 지우지 않는다
+  const other = JSON.parse(s.map.get(USERS_KEY)!);
+  other.accounts['다른탭'] = { ...acc('다른탭'), id: '다른탭' };
+  s.setItem(USERS_KEY, JSON.stringify(other));
+  users.persist();
+  assert.ok(new Users(s).has('다른탭'));
+  // 4) 저장소가 안 써지면 writeFailed 로 알려 준다
+  const bad = memory();
+  bad.setItem = () => { throw new Error('quota'); };
+  const u2 = new Users(bad);
+  u2.register('a1', '1234');
+  assert.ok(u2.writeFailed);
 });

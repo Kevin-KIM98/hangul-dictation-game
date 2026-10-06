@@ -7,7 +7,7 @@ import { sfx, speak, stopSpeaking, unlock, type SpeakMethod } from './audio.ts';
 import { canRecord, deleteRecording, getRecording, listRecordings, startRecording, saveRecording, clipKey, type Recorder } from './recordings.ts';
 import { IN_APP_NAME, externalUrl, inAppBrowser } from './browser.ts';
 import {
-  applyQuestionSet, applyWarning, blankCount, bossPhase, bossTime, buy, canResume, difficulty, equip, finishBoss, finishLap, newSave,
+  applyQuestionSet, applyWarning, blankCount, bossPhase, bossTime, buy, canResume, difficulty, equip, finishBoss, finishLap, lapQuestions, newSave,
   recordBadShot, setKeyOf, themeIndex, timeLimit, winPoints, ITEMS, MIN_WIN_LAPS, RECKLESS_LOCK_MS, STAGES,
   type Difficulty, type ItemKind, type LapSnapshot, type Mode, type Save,
 } from './campaign.ts';
@@ -70,6 +70,11 @@ const questions = {
   },
 };
 
+/** 이번 바퀴에 풀 문제: 지난 바퀴에서 틀린 문제가 있으면 그것만 */
+function activeList(): string[] {
+  return lapQuestions(save, current.questions);
+}
+
 /** 저장된 회차 id 로 고른다. 없으면 첫 회차 */
 function pickSet(): QuestionSet {
   current = sets.find((x) => x.id === save.setId) ?? sets[0];
@@ -114,6 +119,10 @@ const isLocked = () => document.pointerLockElement === canvas;
 function setState(s: State): void {
   state = s;
   document.body.dataset.state = s;
+  if (s !== 'playing' && s !== 'boss') {
+    clearTimeout(peekTimer);
+    $('peek').classList.remove('show');
+  }
 }
 
 function toast(msg: string, ms = 2600): void {
@@ -203,12 +212,19 @@ function paintMenu(): void {
   const progress = def.mode === 'boss' ? `${def.emoji} ${def.name} 도전!` : `${def.emoji} ${def.name} ${save.lap + 1}바퀴째`;
   const boss = save.bossClears ? ` · 🐉 ${save.bossGrade}` : '';
   $('record').textContent = `${progress} · 🪙 ${save.coins}${save.crowns ? ` · 👑 ${save.crowns}` : ''}${boss}`;
-  const resumable = canResume(save, questions.list.length);
+  const active = activeList();
+  const retrying = active.length < questions.list.length;
+  if (retrying) $('record').textContent += ` · 🔁 틀린 ${active.length}문제부터`;
+  const resumable = canResume(save, active.length);
   if (!resumable) save.resume = null;
   const cont = $('continue');
   cont.hidden = !resumable;
   if (resumable) cont.textContent = `▶ 이어하기 (${save.resume!.index + 1}번 문제부터 · ${save.resume!.score}점)`;
-  $('start').textContent = resumable ? '처음부터 다시' : def.mode === 'boss' ? '🐉 최종 시험 시작' : '게임 시작';
+  $('start').textContent = resumable
+    ? '처음부터 다시'
+    : def.mode === 'boss'
+      ? retrying ? `🐉 보스전 다시 (틀린 ${active.length}문제)` : '🐉 최종 시험 시작'
+      : retrying ? `🔁 틀린 ${active.length}문제 다시` : '게임 시작';
 }
 
 /** 문항을 하나 끝낼 때마다 바퀴 진행을 저장해 두어, 나중에 이어서 할 수 있게 한다 */
@@ -225,14 +241,14 @@ function snapshotLap(): void {
     lapWarnings,
     savedAt: Date.now(),
   };
-  save.resume = snap.index < questions.list.length ? snap : null;
+  save.resume = snap.index < game.questions.length ? snap : null;
   persist();
 }
 
 /** 이어하기: 저장된 진행을 게임에 되살린다. 성공하면 true */
 function restoreLap(): boolean {
   const snap = save.resume;
-  if (!snap || !canResume(save, questions.list.length) || !game.restore(snap)) return false;
+  if (!snap || !canResume(save, game.questions.length) || !game.restore(snap)) return false;
   earned = snap.earned.slice();
   lapCoins = snap.lapCoins;
   lapWarnings = snap.lapWarnings;
@@ -367,7 +383,8 @@ function startGame(resume = false): void {
   if (def.mode === 'boss') return void startBoss(resume);
   mode = def.mode;
   diff = difficulty(save.level, mode);
-  game = new Game(questions.list, mode === 'blank' ? (n) => blankCount(n, save.level) : undefined);
+  const list = activeList();
+  game = new Game(list, mode === 'blank' ? (n) => blankCount(n, save.level) : undefined);
   earned = [];
   lapCoins = 0;
   lapWarnings = 0;
@@ -384,9 +401,10 @@ function startGame(resume = false): void {
   stage.setSpeaker(true);
   setState('playing');
 
-  $('lap-title').textContent = resumed ? `▶ ${game.index + 2}번 문제부터 이어서` : `${def.emoji} ${def.name}`;
+  const retrying = list.length < questions.list.length;
+  $('lap-title').textContent = resumed ? `▶ ${game.index + 2}번 문제부터 이어서` : retrying ? `🔁 틀린 문제 ${list.length}개 다시` : `${def.emoji} ${def.name}`;
   $('lap-sub').textContent = `${def.emoji} ${def.name} ${save.lap + 1}바퀴 · ${themeName} · 난이도 ${'★'.repeat(save.level)}`;
-  $('lap-desc').textContent = def.desc;
+  $('lap-desc').textContent = retrying ? '지난번에 틀린 문제만 다시 해요. 다 맞히면 다음 단계!' : def.desc;
   $('lap').classList.add('show');
   setTimeout(() => $('lap').classList.remove('show'), 2000);
   nextQuestion();
@@ -554,8 +572,9 @@ function showResult(): void {
   releaseLock();
   const def = STAGES[save.stage];
   const lapNo = save.lap + 1;
-  const missed = game.results.filter((r) => r.misses > 0).length;
-  const out = finishLap(save, game.wrongShots, game.score);
+  const wrongTexts = game.results.filter((r) => r.misses > 0).map((r) => r.text);
+  const missed = wrongTexts.length;
+  const out = finishLap(save, game.wrongShots, game.score, wrongTexts);
   lapCoins += out.total;
   save.stickers = [...new Set([...save.stickers, ...earned])];
   save.resume = null;
@@ -573,7 +592,7 @@ function showResult(): void {
   let message: string;
   if (out.crowned) message = '왕관을 받았어요! 처음 단계부터 새 배경에서 또 도전해요.';
   else if (out.advanced) message = `다음 단계가 열렸어요: ${next.emoji} ${next.name}`;
-  else message = `${missed}문제에서 틀렸어요. 1번부터 다시! 하나도 안 틀리면 다음 단계가 열려요.`;
+  else message = `${missed}문제에서 틀렸어요. 틀린 ${missed}문제만 다시 해요! 다 맞히면 다음 단계가 열려요.`;
   if (out.levelChange > 0) message += ' (난이도 ⬆)';
   if (out.levelChange < 0) message += ' (조금 쉽게 해 줄게요)';
   if (lapWarnings) message += ` ⚠️ 아무 데나 쏘기 경고 ${lapWarnings}번 — 잘 듣고 겨눠서 쏴요!`;
@@ -593,7 +612,7 @@ function showResult(): void {
   );
   $('result-total').textContent = `이번 바퀴 🪙 +${lapCoins} · 가진 코인 🪙 ${save.coins}`;
   $('result-stickers').textContent = earned.join(' ');
-  $('again').textContent = out.advanced ? `${next.emoji} ${next.name} 시작` : `🔁 다시 도전 (${save.lap + 1}바퀴)`;
+  $('again').textContent = out.advanced ? `${next.emoji} ${next.name} 시작` : `🔁 틀린 ${missed}문제 다시 (${save.lap + 1}바퀴)`;
   $('result-share').hidden = true;
   stage.celebrate(out.perfect ? 16 : 5);
   if (out.perfect) sfx.bonus();
@@ -636,7 +655,7 @@ function quake(): void {
 async function startBoss(resume = false): Promise<void> {
   mode = 'boss';
   diff = difficulty(save.level, 'full');
-  game = new Game(questions.list);
+  game = new Game(activeList());
   earned = [];
   lapCoins = 0;
   lapWarnings = 0;
@@ -653,7 +672,7 @@ async function startBoss(resume = false): Promise<void> {
   stage.setStickers(save.stickers);
   stage.setSpeaker(false);
   stage.clearBalloons();
-  bossMax = questions.list.reduce((n, q) => n + new Round(q).targetCount, 0);
+  bossMax = game.questions.reduce((n, q) => n + new Round(q).targetCount, 0);
   // 이어하기: 이미 되찾은 글자만큼 보스 체력이 깎여 있다
   bossHp = bossMax - game.results.reduce((n, r) => n + new Round(r.text).targetCount, 0);
   setState('boss');
@@ -861,35 +880,19 @@ function bossHitBy(ch: string): void {
   }
 }
 
-/** 보스를 물리쳤다: 왕관·등급·기록 */
+/** 보스전이 끝났다: 하나도 안 틀렸으면 왕관, 틀렸으면 틀린 문제로 보스전을 다시 */
 function showBossResult(): void {
   setState('result');
   busy = false;
   document.body.classList.remove('hurry');
   stage.clearBalloons();
   releaseLock();
-  boss.beaten();
-  sfx.victory();
-  stage.celebrate(24);
-  const out = finishBoss(save, game.wrongShots, game.score, Date.now(), current.title);
+  const wrongTexts = game.results.filter((r) => r.misses > 0).map((r) => r.text);
+  const out = finishBoss(save, game.wrongShots, game.score, Date.now(), current.title, wrongTexts);
   lapCoins += out.total;
   save.stickers = [...new Set([...save.stickers, ...earned])];
   save.resume = null;
   persist();
-  void import('./ocr.ts').then((m) => m.releaseHandwriting());
-  setTimeout(() => boss.show(false), 1800);
-
-  const win = out.win;
-  const rank = users.winners().find((w) => !w.friend && w.at === win.at && w.id === users.current()?.id);
-  $('result-title').textContent = `🏆 ${win.nth}회차 우승! ${out.grade}등급`;
-  $('result-score').textContent = `🐉 글자 도둑 대왕 격파 · ${game.score}점${out.newBest ? ' · 🆕 최고 기록!' : ''}`;
-  let message = win.laps === MIN_WIN_LAPS ? `⚡ ${win.laps}바퀴 만에 한 번에 우승했어요! ` : `${win.laps}바퀴 만에 우승했어요. `;
-  message += `우승 점수 ${winPoints(win)}점`;
-  if (rank) message += rank.tied ? ` · 명예의 전당 공동 ${rank.rank}위!` : ` · 명예의 전당 ${rank.rank}위!`;
-  message += out.perfect ? ' 한 글자도 안 틀렸어요!' : ` (${game.wrongShots}번 틀림)`;
-  if (out.levelChange > 0) message += ' (난이도 ⬆)';
-  if (out.levelChange < 0) message += ' (조금 쉽게 해 줄게요)';
-  $('result-stars').textContent = message;
   const rows = [{ label: '되찾은 글자·보너스', amount: lapCoins - out.total }, ...out.coins];
   $('result-coins').replaceChildren(
     ...rows.map((c) => {
@@ -904,6 +907,36 @@ function showBossResult(): void {
   );
   $('result-total').textContent = `이번 시험 🪙 +${lapCoins} · 가진 코인 🪙 ${save.coins}`;
   $('result-stickers').textContent = earned.join(' ');
+
+  if (!out.cleared) {
+    // 틀렸다: 보스는 아직 버티고 있다
+    boss.say('크하하! 아직이다! 틀린 글자를 다시 써 봐라!', 3000);
+    sfx.attack();
+    setTimeout(() => boss.show(false), 2000);
+    $('result-title').textContent = `💪 아직이야! 틀린 ${out.retryCount}문제`;
+    $('result-score').textContent = `🐉 ${game.wrongShots}번 틀렸어요 · ${game.score}점`;
+    $('result-stars').textContent = `틀린 ${out.retryCount}문제만 다시 써서 보스를 물리쳐요. 하나도 안 틀리면 왕관! (지금까지 ${save.bossWrong}번 틀림 → ${out.grade}등급)`;
+    $('again').textContent = `🐉 보스전 다시 (틀린 ${out.retryCount}문제)`;
+    $('result-share').hidden = true;
+    renderResultList();
+    return;
+  }
+
+  boss.beaten();
+  sfx.victory();
+  stage.celebrate(24);
+  void import('./ocr.ts').then((m) => m.releaseHandwriting());
+  setTimeout(() => boss.show(false), 1800);
+  const win = out.win!;
+  const rank = users.winners().find((w) => !w.friend && w.at === win.at && w.id === users.current()?.id);
+  $('result-title').textContent = `🏆 ${win.nth}회차 우승! ${out.grade}등급`;
+  $('result-score').textContent = `🐉 글자 도둑 대왕 격파 · ${game.score}점${out.newBest ? ' · 🆕 최고 기록!' : ''}`;
+  let message = win.laps === MIN_WIN_LAPS ? `⚡ ${win.laps}바퀴 만에 한 번에 우승했어요! ` : `${win.laps}바퀴 만에 우승했어요. `;
+  message += `우승 점수 ${winPoints(win)}점`;
+  if (rank) message += rank.tied ? ` · 명예의 전당 공동 ${rank.rank}위!` : ` · 명예의 전당 ${rank.rank}위!`;
+  message += out.grade === 'S' ? ' 한 글자도 안 틀렸어요!' : ` (${out.grade}등급: 반복한 보스전까지 합쳐 틀린 횟수로 정해요)`;
+  if (out.levelChange > 0) message += ' (난이도 ⬆)';
+  $('result-stars').textContent = message;
   $('again').textContent = `${STAGES[0].emoji} 새 배경에서 처음부터 다시`;
   $('result-share').hidden = false;
   renderResultList();
@@ -973,8 +1006,9 @@ function enter(account: { id: string; name: string; save: Save }, fresh: boolean
   toMenu();
   const who = displayName(account);
   if (fresh) toast(`🌟 ${who} 친구, 환영해요! 아이디는 @${account.id}예요`, 3000);
-  else if (canResume(save, questions.list.length)) toast(`👋 ${who} 친구, 어서 와요! 하던 바퀴를 이어서 할 수 있어요`, 3000);
+  else if (canResume(save, activeList().length)) toast(`👋 ${who} 친구, 어서 와요! 하던 바퀴를 이어서 할 수 있어요`, 3000);
   else toast(`👋 ${who} 친구, 어서 와요!`, 2600);
+  if (users.writeFailed) setTimeout(() => toast('⚠️ 이 브라우저는 저장이 안 돼요(시크릿 모드?). 기록이 남지 않을 수 있어요', 4000), 2800);
   if (bragArrived) {
     bragArrived = null;
     openFame();
@@ -1001,7 +1035,7 @@ function bindLogin(): void {
   const msg = $('login-msg');
   $('login-form').addEventListener('submit', (e) => {
     e.preventDefault();
-    const err = idError(id.value) ?? passwordError(pw.value);
+    const err = (normalizeId(id.value) ? null : '아이디를 적어 주세요.') ?? passwordError(pw.value);
     if (err) return void (msg.textContent = err);
     if (!users.has(id.value)) {
       msg.textContent = '없는 아이디예요. 처음이면 아래 [새로 만들기]를 눌러요.';
