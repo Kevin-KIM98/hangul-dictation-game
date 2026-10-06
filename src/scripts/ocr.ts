@@ -268,8 +268,8 @@ export interface Judgement {
 export async function judgeHandwriting(norm: HTMLCanvasElement, expected: string): Promise<Judgement> {
   const drawn = shapeOf(norm);
   const scores = drawn ? shapeScores(drawn, expected) : undefined;
-  // 기계가 정답이라고 읽어도, 모양이 다른 모음 쪽에 훨씬 가까우면(ㅐ를 ㅔ로 쓴 경우) 믿지 않는다
-  const vowelVeto = !!scores && scores.vowel > scores.mine + 0.08;
+  // 기계가 정답이라고 읽으면 믿는다(모양으로 거부해 보니 맞게 쓴 글자까지 떨어뜨렸다)
+  const vowelVeto = false;
 
   const reads: string[] = [];
   const first = await readHandwriting(norm);
@@ -293,7 +293,7 @@ export async function judgeHandwriting(norm: HTMLCanvasElement, expected: string
   // 자음이 다른 글자(갑/갚)와는 거의 비슷해도 봐주지만, 모음이 다른 글자(맷/멧)보다는 분명히 정답 쪽이어야 한다
   let shapeOk = false;
   if (scores) {
-    shapeOk = scores.mine >= 0.45 && scores.mine >= scores.cons - 0.03 && scores.mine > scores.vowel + 0.015;
+    shapeOk = scores.mine >= 0.45 && scores.mine >= scores.cons - 0.03 && scores.mine >= scores.vowel;
     if (shapeOk && (!readCh || looksAlike(expected, readCh) || jamoDiff(expected, readCh).length >= 2)) {
       return { ok: true, read, how: 'shape', hint: '', scores };
     }
@@ -302,7 +302,7 @@ export async function judgeHandwriting(norm: HTMLCanvasElement, expected: string
   if (readCh && looksAlike(expected, readCh) && shapeOk) return { ok: true, read, how: 'lenient', hint: '', scores };
 
   const diff = readCh ? jamoDiff(expected, readCh) : [];
-  const hint = diff.length === 1 ? JAMO_NAME[diff[0]] : vowelVeto ? '모음' : '';
+  const hint = diff.length === 1 ? JAMO_NAME[diff[0]] : '';
   return { ok: false, read, how: 'none', hint, scores };
 }
 
