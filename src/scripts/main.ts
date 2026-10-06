@@ -3,7 +3,9 @@ import { Stage, type Balloon } from './scene.ts';
 import { Game, MAX_HEARTS, Round } from './round.ts';
 import { distractorsFor } from './hangul.ts';
 import { loadQuestions, parseQuestions, resetQuestions, saveQuestions } from './questions.ts';
-import { sfx, speak, stopSpeaking, unlock } from './audio.ts';
+import { sfx, speak, stopSpeaking, unlock, type SpeakMethod } from './audio.ts';
+import { canRecord, deleteRecording, getRecording, listRecordings, startRecording, saveRecording, clipKey, type Recorder } from './recordings.ts';
+import { IN_APP_NAME, externalUrl, inAppBrowser } from './browser.ts';
 import {
   applyQuestionSet, applyWarning, blankCount, bossPhase, bossTime, buy, canResume, difficulty, equip, finishBoss, finishLap, newSave,
   recordBadShot, themeIndex, timeLimit, winPoints, ITEMS, MIN_WIN_LAPS, RECKLESS_LOCK_MS, STAGES,
@@ -308,9 +310,37 @@ function updateHint(): void {
 
 // ───────── 진행 ─────────
 
+let lastSpeak: SpeakMethod | null = null;
+let peekTimer = 0;
+
+/**
+ * 문제를 읽어 준다: 녹음 → 내장 음성 → 온라인 음성. 모두 안 되면 잠깐 글로 보여 준다(보고 기억해서 쓰기).
+ */
 function readQuestion(): void {
   const text = game.round.text;
-  speak(text, () => toast(`소리가 안 나와요. 눈으로 보고 기억해요:  ${text}`, 3000));
+  const my = game.round;
+  void getRecording(text).then((rec) => {
+    if (game.round !== my) return;
+    return speak(text, () => showPeek(text), rec).then((m) => {
+      if (m) {
+        lastSpeak = m;
+        $('peek').classList.remove('show');
+      }
+    });
+  });
+}
+
+/** 소리를 못 낼 때: 문장을 4초만 보여 준다. 🔊 를 누르면 다시 보인다 */
+function showPeek(text: string): void {
+  const el = $('peek');
+  $('peek-text').textContent = text;
+  const app = inAppBrowser(navigator.userAgent);
+  $('peek-hint').textContent = app
+    ? `${IN_APP_NAME[app]} 안에서는 소리가 안 나요. 처음 화면의 [크롬·사파리로 열기]를 눌러요`
+    : '이 기기에서 소리를 낼 수 없어요. 문제 만들기에서 🎙️ 녹음해 두면 어디서나 들려요';
+  el.classList.add('show');
+  clearTimeout(peekTimer);
+  peekTimer = window.setTimeout(() => el.classList.remove('show'), 4000);
 }
 
 /** 한 바퀴(1번~마지막 문항) 시작. 단계·난이도·배경은 저장된 진행에 따라 정해진다. resume 이면 하다 만 곳부터 */
@@ -852,6 +882,32 @@ function showBossResult(): void {
 
 // ───────── 학생 로그인 ─────────
 
+/** 카카오톡 같은 앱 안의 브라우저면 바깥 브라우저로 열도록 안내한다 */
+function paintInApp(): void {
+  const app = inAppBrowser(navigator.userAgent);
+  const bar = $('inapp');
+  bar.hidden = !app;
+  if (!app) return;
+  $('inapp-text').textContent = `${IN_APP_NAME[app]} 안에서는 소리가 안 나올 수 있어요.`;
+}
+
+function bindInApp(): void {
+  $('inapp-open').addEventListener('click', async () => {
+    const url = location.href;
+    const target = externalUrl(inAppBrowser(navigator.userAgent), url);
+    if (target) {
+      location.href = target;
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      toast('주소를 복사했어요. 크롬이나 사파리에 붙여 넣어 열어요', 3200);
+    } catch {
+      toast('오른쪽 위 메뉴에서 "다른 브라우저로 열기"를 눌러요', 3200);
+    }
+  });
+}
+
 function showLogin(): void {
   clearTimeout(rereadTimer);
   stopSpeaking();
@@ -1257,6 +1313,91 @@ function openEditor(lines: string[], withPhoto: boolean): void {
   $('ed-photo').hidden = !withPhoto;
   $('ed-status').textContent = withPhoto ? '글자가 똑바로 보이게 돌린 뒤 [글자 읽기]를 눌러요.' : '한 줄에 한 문제씩 적어요.';
   setState('editor');
+  void renderRecordings();
+}
+
+// ───────── 문제 녹음(보호자·선생님 목소리) ─────────
+
+let recorder: Recorder | null = null;
+let recordingFor: string | null = null;
+let recTimer = 0;
+
+/** 적어 둔 문제마다 🎙️ 녹음 · ▶ 듣기 · 🗑 버튼을 보여 준다 */
+async function renderRecordings(): Promise<void> {
+  const box = $('ed-rec');
+  const lines = parseQuestions($<HTMLTextAreaElement>('ed-text').value);
+  box.hidden = !lines.length;
+  if (!lines.length) return;
+  const have = await listRecordings();
+  const supported = canRecord();
+  $('ed-rec-title').textContent = `🎙️ 내 목소리로 녹음 (${lines.filter((l) => have.has(clipKey(l))).length}/${lines.length})`;
+  $('ed-rec-note').textContent = supported
+    ? '녹음해 두면 소리가 안 나는 기기에서도 내 목소리로 문제를 들려줘요. 한 줄에 8초까지.'
+    : '이 브라우저는 녹음을 지원하지 않아요. 크롬이나 사파리에서 녹음해요.';
+  $('ed-rec-list').replaceChildren(
+    ...lines.map((line) => {
+      const row = document.createElement('div');
+      row.className = 'rec-row';
+      const text = document.createElement('span');
+      text.className = 'rec-text';
+      text.textContent = (have.has(clipKey(line)) ? '✅ ' : '') + line;
+      const btn = (label: string, cls: string, on: () => void) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = `rec-btn ${cls}`;
+        b.textContent = label;
+        b.addEventListener('click', on);
+        return b;
+      };
+      row.append(text);
+      if (recordingFor === line) {
+        row.classList.add('recording');
+        row.append(btn('⏹ 끝', 'stop', () => void stopRecordingFor(line)));
+      } else {
+        if (supported) row.append(btn('🎙️', 'rec', () => void startRecordingFor(line)));
+        if (have.has(clipKey(line))) {
+          row.append(btn('▶', 'play', () => void playRecordingOf(line)));
+          row.append(btn('🗑', 'del', () => deleteRecording(line).then(renderRecordings)));
+        }
+      }
+      return row;
+    }),
+  );
+}
+
+async function startRecordingFor(line: string): Promise<void> {
+  if (recorder) await stopRecordingFor(recordingFor!);
+  unlock();
+  try {
+    recorder = await startRecording(8000, () => void stopRecordingFor(line));
+  } catch {
+    return toast('마이크를 쓸 수 없어요. 마이크 사용을 허용해 주세요', 3000);
+  }
+  recordingFor = line;
+  toast(`🎙️ 녹음 중… "${line}" 을(를) 또박또박 읽어요`, 8000);
+  void renderRecordings();
+}
+
+async function stopRecordingFor(line: string): Promise<void> {
+  const r = recorder;
+  if (!r) return;
+  recorder = null;
+  recordingFor = null;
+  clearTimeout(recTimer);
+  const blob = await r.stop();
+  if (blob.size < 200) toast('녹음이 너무 짧아요. 다시 해 봐요', 2000);
+  else {
+    await saveRecording(line, blob);
+    toast('녹음했어요! ▶ 로 들어 봐요', 1800);
+  }
+  void renderRecordings();
+}
+
+async function playRecordingOf(line: string): Promise<void> {
+  unlock();
+  const rec = await getRecording(line);
+  if (!rec) return;
+  await speak(line, () => toast('재생할 수 없어요', 1600), rec);
 }
 
 function bindEditor(): void {
@@ -1311,7 +1452,17 @@ function bindEditor(): void {
   });
 
   $('write').addEventListener('click', () => openEditor(questions.list, false));
-  $('ed-cancel').addEventListener('click', toMenu);
+  let recDebounce = 0;
+  text.addEventListener('input', () => {
+    clearTimeout(recDebounce);
+    recDebounce = window.setTimeout(() => void renderRecordings(), 500);
+  });
+  $('ed-cancel').addEventListener('click', () => {
+    if (recorder) recorder.cancel();
+    recorder = null;
+    recordingFor = null;
+    toMenu();
+  });
   $('ed-save').addEventListener('click', () => {
     const list = parseQuestions(text.value);
     if (!list.length) return toast('문제가 없어요. 한 줄에 한 문제씩 적어 주세요.');
@@ -1465,6 +1616,8 @@ function bindInput(): void {
   bindEditor();
   bindLogin();
   bindFame();
+  bindInApp();
+  paintInApp();
 
   $<HTMLInputElement>('file').addEventListener('change', async (e) => {
     const input = e.target as HTMLInputElement;
@@ -1543,7 +1696,9 @@ async function boot(): Promise<void> {
     get pad() { return pad; },
     get boss() { return { hp: bossHp, max: bossMax, busy, fallback: padFallback, timeLeft }; },
     get calm() { return performance.now() < calmUntil; },
+    get lastSpeak() { return lastSpeak; },
     startGame,
+    readQuestion,
     shootAt(x: number, y: number) { shoot({ x, y }); },
     hitChar(ch: string) {
       const b = stage.balloons.find((x) => x.ch === ch);

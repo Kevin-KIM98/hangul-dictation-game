@@ -11,6 +11,7 @@ export function unlock(): void {
   } catch {
     ctx = null;
   }
+  unlockSpeech();
 }
 
 function tone(freq: number, dur: number, type: OscillatorType, vol: number, slideTo?: number, delay = 0): void {
@@ -102,28 +103,148 @@ function koreanVoice(): SpeechSynthesisVoice | undefined {
   return speechSynthesis.getVoices().find((v) => v.lang.replace('_', '-').toLowerCase().startsWith('ko'));
 }
 
-/** 문장을 한국어로 읽는다. 읽을 수 없으면 onFail 호출 */
-export function speak(text: string, onFail: () => void): void {
-  if (!('speechSynthesis' in window)) return onFail();
-  const voices = speechSynthesis.getVoices();
-  const voice = koreanVoice();
-  // 목록이 비어 있으면(안드로이드 등) lang 지정만으로 읽히므로 시도한다
-  if (voices.length > 0 && !voice) return onFail();
-  speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = 'ko-KR';
-  if (voice) u.voice = voice;
-  u.rate = 0.75;
-  u.onerror = (e) => {
-    if (e.error !== 'canceled' && e.error !== 'interrupted') onFail();
-  };
-  current = u;
-  speechSynthesis.speak(u);
+/** 일부 브라우저는 음성 목록을 늦게 채운다: 잠깐(최대 waitMs) 기다려 본다 */
+function voicesReady(waitMs: number): Promise<void> {
+  if (!('speechSynthesis' in window) || speechSynthesis.getVoices().length) return Promise.resolve();
+  return new Promise((res) => {
+    const done = () => {
+      speechSynthesis.removeEventListener('voiceschanged', done);
+      res();
+    };
+    speechSynthesis.addEventListener('voiceschanged', done);
+    setTimeout(done, waitMs);
+  });
+}
+
+let speechUnlocked = false;
+
+/** iOS 등은 사용자 입력 안에서 한 번 말해야 그 뒤로 소리가 난다. unlock() 에서 부른다 */
+function unlockSpeech(): void {
+  if (speechUnlocked || !('speechSynthesis' in window)) return;
+  speechUnlocked = true;
+  try {
+    const u = new SpeechSynthesisUtterance(' ');
+    u.volume = 0;
+    speechSynthesis.speak(u);
+  } catch {
+    /* 무시 */
+  }
+}
+
+/**
+ * 브라우저 내장 음성 합성으로 읽는다. 실제로 소리가 시작되면 true.
+ * 시작 신호가 timeout 안에 안 오거나 오류가 나면 false(다음 방법으로).
+ */
+function speakWeb(text: string, timeoutMs = 3000): Promise<boolean> {
+  if (!('speechSynthesis' in window)) return Promise.resolve(false);
+  return voicesReady(800).then(
+    () =>
+      new Promise<boolean>((res) => {
+        let settled = false;
+        let timer = 0;
+        const finish = (ok: boolean) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          res(ok);
+        };
+        try {
+          speechSynthesis.cancel();
+          const u = new SpeechSynthesisUtterance(text);
+          u.lang = 'ko-KR';
+          const voice = koreanVoice();
+          if (voice) u.voice = voice; // 없어도 lang 만으로 읽히는 기기가 많아 그냥 시도한다
+          u.rate = 0.75;
+          u.onstart = () => finish(true);
+          u.onerror = (e) => {
+            if (e.error === 'canceled' || e.error === 'interrupted') return finish(settled);
+            finish(false);
+          };
+          u.onend = () => finish(true);
+          current = u;
+          // 일시정지 상태로 굳어 있으면 풀어 준다(크롬 버그)
+          if (speechSynthesis.paused) speechSynthesis.resume();
+          speechSynthesis.speak(u);
+          timer = window.setTimeout(() => finish(false), timeoutMs);
+        } catch {
+          finish(false);
+        }
+      }),
+  );
+}
+
+let player: HTMLAudioElement | null = null;
+let playerUrl: string | null = null;
+
+function stopPlayer(): void {
+  if (player) {
+    player.pause();
+    player.src = '';
+    player = null;
+  }
+  if (playerUrl) {
+    URL.revokeObjectURL(playerUrl);
+    playerUrl = null;
+  }
+}
+
+/** 오디오 파일(녹음·온라인 음성)을 재생. 실제로 재생이 시작되면 true. objectUrl 이면 끝난 뒤 주소를 거둔다 */
+function playUrl(src: string, objectUrl = false, timeoutMs = 6000): Promise<boolean> {
+  return new Promise((res) => {
+    stopPlayer(); // 이전 재생(과 그 객체 주소)을 먼저 정리한 뒤에 새 주소를 기억한다
+    if (objectUrl) playerUrl = src;
+    const a = new Audio();
+    player = a;
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (!ok && player === a) stopPlayer();
+      res(ok);
+    };
+    a.preload = 'auto';
+    a.onplaying = () => finish(true);
+    a.onerror = () => finish(false);
+    a.onended = () => player === a && stopPlayer();
+    a.src = src;
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    // play() 의 약속이 이행되면 재생이 시작된 것(출력 장치가 없는 환경은 playing 이벤트가 안 올 수 있다)
+    a.play().then(() => finish(true), () => finish(false));
+  });
+}
+
+/** 온라인 음성(인터넷이 되고 브라우저가 허용할 때만). 비공식 주소라 안 되면 조용히 넘어간다 */
+function onlineTtsUrl(text: string): string {
+  return `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=ko&q=${encodeURIComponent(text)}`;
+}
+
+export type SpeakMethod = 'recording' | 'web' | 'online';
+let seq = 0;
+
+/**
+ * 문장을 한국어로 읽는다. 녹음 → 내장 음성 → 온라인 음성 순으로 되는 것을 쓴다.
+ * 모두 안 되면 onFail. 어떤 방법으로 읽었는지 돌려준다(없으면 null).
+ */
+export async function speak(text: string, onFail: () => void, recording?: Blob | null): Promise<SpeakMethod | null> {
+  const my = ++seq;
+  stopSpeaking();
+  if (recording) {
+    if (await playUrl(URL.createObjectURL(recording), true)) return 'recording';
+    if (my !== seq) return null;
+  }
+  if (await speakWeb(text)) return 'web';
+  if (my !== seq) return null;
+  if (navigator.onLine !== false && (await playUrl(onlineTtsUrl(text)))) return 'online';
+  if (my !== seq) return null;
+  onFail();
+  return null;
 }
 
 export function stopSpeaking(): void {
   if ('speechSynthesis' in window) speechSynthesis.cancel();
   current = null;
+  stopPlayer();
 }
 
 // 일부 브라우저는 음성 목록을 늦게 채운다

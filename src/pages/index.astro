@@ -42,6 +42,17 @@
       <p id="lap-desc"></p>
     </div>
 
+    <div id="peek" class="banner">
+      <p id="peek-title">👀 소리 대신 눈으로 기억해요</p>
+      <p id="peek-text"></p>
+      <p id="peek-hint"></p>
+    </div>
+
+    <div id="inapp" hidden>
+      <span id="inapp-text"></span>
+      <button id="inapp-open" type="button">🌐 크롬·사파리로 열기</button>
+    </div>
+
     <div id="warn" class="banner">
       <p id="warn-title">🚫 아무 데나 쏘지 말아요!</p>
       <p id="warn-desc">문제를 잘 듣고, 글자를 찾아서 겨눈 뒤 쏴요</p>
@@ -169,6 +180,11 @@
         </div>
         <p id="ed-status" class="status"></p>
         <textarea id="ed-text" rows="10" spellcheck="false" placeholder="한 줄에 한 문제씩 적어요"></textarea>
+        <div id="ed-rec" hidden>
+          <h3 id="ed-rec-title" class="fame-h"></h3>
+          <p id="ed-rec-note" class="fame-note"></p>
+          <div id="ed-rec-list"></div>
+        </div>
         <button id="ed-save" class="big" type="button">저장</button>
         <button id="ed-cancel" class="ghost" type="button">취소</button>
       </div>
@@ -521,6 +537,24 @@
       #winners-list li.me { outline: 3px solid var(--coral); }
       #winners-list .f-rank { font-size: 16px; white-space: nowrap; }
       #winners-list:empty::before { content: '아직 우승자가 없어요. 최종 시험을 통과해 이름을 올려요!'; display: block; text-align: center; padding: 14px; color: #5a6a92; }
+      #peek { z-index: 8; top: 38%; }
+      #peek-title { font-size: clamp(16px, 3.8vmin, 22px); color: var(--coral); }
+      #peek-text { font-size: clamp(26px, 7vmin, 44px); margin-top: 6px; }
+      #peek-hint { font-size: 14px; color: #5a6a92; margin-top: 8px; max-width: 80vw; white-space: normal; }
+      #inapp {
+        position: fixed; left: 0; right: 0; top: 0; z-index: 9; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center;
+        padding: max(8px, env(safe-area-inset-top)) 12px 8px; background: var(--sun); border-bottom: var(--edge); font-size: 15px; text-align: center;
+      }
+      #inapp[hidden] { display: none; }
+      #inapp button { padding: 6px 12px; font-size: 15px; background: var(--ink); color: #fff; border: 0; border-radius: 999px; }
+      body:not([data-state='menu']):not([data-state='login']) #inapp { display: none; }
+      #ed-rec { text-align: left; margin: 0 0 12px; }
+      .rec-row { display: flex; gap: 6px; align-items: center; padding: 6px 8px; margin-bottom: 4px; background: #fff; border-radius: 10px; font-size: 16px; }
+      .rec-row.recording { background: #ffe3e3; animation: pulse 1s infinite; }
+      .rec-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .rec-btn { min-width: 40px; min-height: 36px; padding: 0 10px; font-size: 16px; background: var(--cream); border: 2px solid var(--ink); border-radius: 10px; }
+      .rec-btn.rec { background: var(--coral); color: #fff; }
+      .rec-btn.stop { background: var(--ink); color: #fff; }
       #warn { z-index: 8; border-color: var(--coral); box-shadow: 0 8px 0 var(--coral); }
       #warn-title { font-size: clamp(26px, 6vmin, 40px); color: var(--coral); }
       #warn-desc { font-size: clamp(16px, 3.8vmin, 22px); margin-top: 4px; }
