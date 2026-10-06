@@ -1,5 +1,5 @@
 // 받아쓰기 급수표 사진에서 문제 문장을 읽어 낸다 (브라우저 안에서 Tesseract로 인식)
-import { decoysFor, jamoDiff, looksAlike, JAMO_NAME } from './hangul.ts';
+import { compose, decompose, decoysFor, isHangul, jamoDiff, looksAlike, JAMO_NAME } from './hangul.ts';
 
 const MAX_SIDE = 2000;
 // 하위 경로(GitHub Pages)에 배포해도 찾을 수 있게 사이트 기준 경로를 붙인다
@@ -231,6 +231,23 @@ function shapeScore(drawn: Float32Array, ch: string): number {
   return Math.max(-1, ...templates(ch).map((t) => correlation(drawn, t)));
 }
 
+/** 같은 자음에 모음만 다른 글자들(모음을 틀리게 쓴 경우를 가려내는 비교 대상) */
+function vowelRivals(ch: string): string[] {
+  if (!isHangul(ch)) return [];
+  const [cho, jung, jong] = decompose(ch);
+  const out: string[] = [];
+  for (let j = 0; j < 21; j++) if (j !== jung) out.push(compose(cho, j, jong));
+  return out;
+}
+
+/** 모양 점수 묶음: 정답 / 자음이 다른 글자 중 최고 / 모음이 다른 글자 중 최고 */
+function shapeScores(drawn: Float32Array, expected: string): { mine: number; cons: number; vowel: number } {
+  const mine = shapeScore(drawn, expected);
+  const cons = Math.max(-1, ...decoysFor(expected, 12).filter((d) => !jamoDiff(expected, d).includes('jung')).map((d) => shapeScore(drawn, d)));
+  const vowel = Math.max(-1, ...vowelRivals(expected).map((d) => shapeScore(drawn, d)));
+  return { mine, cons, vowel };
+}
+
 export interface Judgement {
   ok: boolean;
   /** 기계가 읽은 글자(없으면 '') */
@@ -249,10 +266,15 @@ export interface Judgement {
  * → ④ 읽힌 글자가 정답과 생김새 비슷한 자모 하나만 다르고 모양도 정답 쪽이면 인정.
  */
 export async function judgeHandwriting(norm: HTMLCanvasElement, expected: string): Promise<Judgement> {
+  const drawn = shapeOf(norm);
+  const scores = drawn ? shapeScores(drawn, expected) : undefined;
+  // 기계가 정답이라고 읽어도, 모양이 다른 모음 쪽에 훨씬 가까우면(ㅐ를 ㅔ로 쓴 경우) 믿지 않는다
+  const vowelVeto = !!scores && scores.vowel > scores.mine + 0.08;
+
   const reads: string[] = [];
   const first = await readHandwriting(norm);
   reads.push(first);
-  if (first.includes(expected)) return { ok: true, read: first, how: 'ocr', hint: '' };
+  if (first.includes(expected) && !vowelVeto) return { ok: true, read: first, how: 'ocr', hint: '', scores };
 
   const passes: [HTMLCanvasElement, 8 | 10][] = [
     [variant(norm, 2, 1), 8],
@@ -262,23 +284,16 @@ export async function judgeHandwriting(norm: HTMLCanvasElement, expected: string
   for (const [img, psm] of passes) {
     const r = await readHandwriting(img, psm);
     reads.push(r);
-    if (r.includes(expected)) return { ok: true, read: r, how: 'ocr-retry', hint: '' };
+    if (r.includes(expected) && !vowelVeto) return { ok: true, read: r, how: 'ocr-retry', hint: '', scores };
   }
   const read = reads.find((r) => r.length === 1) ?? reads.find((r) => r.length) ?? '';
   const readCh = [...read][0] ?? '';
 
   // 모양 비교: 정답 본보기와의 닮음이 헷갈리는 글자들보다 높으면 정답.
   // 자음이 다른 글자(갑/갚)와는 거의 비슷해도 봐주지만, 모음이 다른 글자(맷/멧)보다는 분명히 정답 쪽이어야 한다
-  const drawn = shapeOf(norm);
   let shapeOk = false;
-  let scores: Judgement['scores'];
-  if (drawn) {
-    const mine = shapeScore(drawn, expected);
-    const decoys = decoysFor(expected, 12);
-    const cons = Math.max(-1, ...decoys.filter((d) => !jamoDiff(expected, d).includes('jung')).map((d) => shapeScore(drawn, d)));
-    const vowel = Math.max(-1, ...decoys.filter((d) => jamoDiff(expected, d).includes('jung')).map((d) => shapeScore(drawn, d)));
-    scores = { mine, cons, vowel };
-    shapeOk = mine >= 0.45 && mine >= cons - 0.03 && mine > vowel + 0.015;
+  if (scores) {
+    shapeOk = scores.mine >= 0.45 && scores.mine >= scores.cons - 0.03 && scores.mine > scores.vowel + 0.015;
     if (shapeOk && (!readCh || looksAlike(expected, readCh) || jamoDiff(expected, readCh).length >= 2)) {
       return { ok: true, read, how: 'shape', hint: '', scores };
     }
@@ -287,7 +302,7 @@ export async function judgeHandwriting(norm: HTMLCanvasElement, expected: string
   if (readCh && looksAlike(expected, readCh) && shapeOk) return { ok: true, read, how: 'lenient', hint: '', scores };
 
   const diff = readCh ? jamoDiff(expected, readCh) : [];
-  const hint = diff.length === 1 ? JAMO_NAME[diff[0]] : '';
+  const hint = diff.length === 1 ? JAMO_NAME[diff[0]] : vowelVeto ? '모음' : '';
   return { ok: false, read, how: 'none', hint, scores };
 }
 
