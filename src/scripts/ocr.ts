@@ -239,6 +239,8 @@ export interface Judgement {
   how: 'ocr' | 'ocr-retry' | 'shape' | 'lenient' | 'none';
   /** 틀렸을 때 어디가 다른지("받침" 등). 모르면 '' */
   hint: string;
+  /** 모양 비교 점수(검수용): 정답 본보기 / 자음이 다른 글자 / 모음이 다른 글자 */
+  scores?: { mine: number; cons: number; vowel: number };
 }
 
 /**
@@ -265,23 +267,28 @@ export async function judgeHandwriting(norm: HTMLCanvasElement, expected: string
   const read = reads.find((r) => r.length === 1) ?? reads.find((r) => r.length) ?? '';
   const readCh = [...read][0] ?? '';
 
-  // 모양 비교: 정답 본보기와의 닮음이 헷갈리는 글자들보다 (거의) 높으면 정답
+  // 모양 비교: 정답 본보기와의 닮음이 헷갈리는 글자들보다 높으면 정답.
+  // 자음이 다른 글자(갑/갚)와는 거의 비슷해도 봐주지만, 모음이 다른 글자(맷/멧)보다는 분명히 정답 쪽이어야 한다
   const drawn = shapeOf(norm);
   let shapeOk = false;
+  let scores: Judgement['scores'];
   if (drawn) {
     const mine = shapeScore(drawn, expected);
-    const rival = Math.max(-1, ...decoysFor(expected, 10).map((d) => shapeScore(drawn, d)));
-    shapeOk = mine >= 0.45 && mine >= rival - 0.03;
+    const decoys = decoysFor(expected, 12);
+    const cons = Math.max(-1, ...decoys.filter((d) => !jamoDiff(expected, d).includes('jung')).map((d) => shapeScore(drawn, d)));
+    const vowel = Math.max(-1, ...decoys.filter((d) => jamoDiff(expected, d).includes('jung')).map((d) => shapeScore(drawn, d)));
+    scores = { mine, cons, vowel };
+    shapeOk = mine >= 0.45 && mine >= cons - 0.03 && mine > vowel + 0.015;
     if (shapeOk && (!readCh || looksAlike(expected, readCh) || jamoDiff(expected, readCh).length >= 2)) {
-      return { ok: true, read, how: 'shape', hint: '' };
+      return { ok: true, read, how: 'shape', hint: '', scores };
     }
   }
   // 읽힌 글자가 정답과 생김새 비슷한 자모 하나만 다르면(ㅅ↔ㅈ 받침 등) 아이 글씨로 보고 인정
-  if (readCh && looksAlike(expected, readCh) && shapeOk) return { ok: true, read, how: 'lenient', hint: '' };
+  if (readCh && looksAlike(expected, readCh) && shapeOk) return { ok: true, read, how: 'lenient', hint: '', scores };
 
   const diff = readCh ? jamoDiff(expected, readCh) : [];
   const hint = diff.length === 1 ? JAMO_NAME[diff[0]] : '';
-  return { ok: false, read, how: 'none', hint };
+  return { ok: false, read, how: 'none', hint, scores };
 }
 
 const OCR_SIZE = 200;
