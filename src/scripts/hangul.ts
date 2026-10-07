@@ -137,3 +137,14 @@ export function decoysFor(ch: string, max = 10): string[] {
   const { strong, weak } = similar(ch);
   return [...new Set([...strong, ...weak])].slice(0, max);
 }
+
+// 겹모음과 그 조각: 기계가 겹모음의 한 획을 놓치면 조각 모음으로 읽는다(ㅝ→ㅓ, ㅘ→ㅏ)
+const COMPOUND: Record<number, number[]> = { 9: [8, 0], 10: [8, 1], 11: [8, 20], 14: [13, 4], 15: [13, 5], 16: [13, 20], 19: [18, 20] };
+
+/** read 가 expected 의 겹모음에서 한 조각을 놓친 글자인가(궐→걸·권 아님: 모음만 비교) */
+export function missesCompoundVowel(expected: string, read: string): boolean {
+  if (jamoDiff(expected, read).join() !== 'jung') return false;
+  const e = decompose(expected)[1];
+  const r = decompose(read)[1];
+  return (COMPOUND[e] ?? []).includes(r);
+}

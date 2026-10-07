@@ -1,7 +1,7 @@
 // 실행: node --test tests/
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { compose, decompose, decoysFor, distractorsFor, jamoDiff, looksAlike, similar } from '../src/scripts/hangul.ts';
+import { compose, decompose, decoysFor, distractorsFor, jamoDiff, looksAlike, missesCompoundVowel, similar } from '../src/scripts/hangul.ts';
 import { cheerFor, hopeFor } from '../src/scripts/cheer.ts';
 import { Game, Round } from '../src/scripts/round.ts';
 import {
@@ -338,6 +338,14 @@ test('자모 차이와 생김새가 비슷한 글자', () => {
   assert.equal(looksAlike('맷', '멧'), false); // ㅐ↔ㅔ 는 받아쓰기의 핵심이라 봐주지 않는다
   assert.equal(looksAlike('맷', '맛'), false);
   assert.ok(decoysFor('맷').includes('맺') && !decoysFor('맷').includes('맷'));
+  // 겹모음의 한 획을 놓친 읽기: 궐→걸(ㅝ→ㅓ), 꽉→각(ㅘ→ㅏ), 의→이. 궐→권은 받침 차이라 아니다
+  assert.ok(missesCompoundVowel('궐', '걸'));
+  assert.ok(missesCompoundVowel('궐', '굴'));
+  assert.ok(missesCompoundVowel('꽉', '깍'));
+  assert.ok(missesCompoundVowel('의', '이'));
+  assert.equal(missesCompoundVowel('궐', '권'), false);
+  assert.equal(missesCompoundVowel('맷', '멧'), false);
+  assert.equal(missesCompoundVowel('걸', '궐'), false);
 });
 
 test('응원 메시지', () => {

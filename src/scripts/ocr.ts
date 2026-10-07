@@ -1,5 +1,5 @@
 // 받아쓰기 급수표 사진에서 문제 문장을 읽어 낸다 (브라우저 안에서 Tesseract로 인식)
-import { compose, decompose, decoysFor, isHangul, jamoDiff, looksAlike, JAMO_NAME } from './hangul.ts';
+import { compose, decompose, decoysFor, isHangul, jamoDiff, looksAlike, missesCompoundVowel, JAMO_NAME } from './hangul.ts';
 
 const MAX_SIDE = 2000;
 // 하위 경로(GitHub Pages)에 배포해도 찾을 수 있게 사이트 기준 경로를 붙인다
@@ -127,19 +127,21 @@ export async function readHandwriting(canvas: HTMLCanvasElement, psm: 8 | 10 = 8
 const FONTS = ['Jua', 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', 'Noto Sans CJK KR', 'NanumGothic', 'sans-serif'];
 const FEAT = 40;
 
-/** 획을 굵게(thick>0) 또는 글자를 작게(scale<1) 바꾼 사본 — 기계가 다른 모양으로도 읽어 보게 */
-function variant(src: HTMLCanvasElement, thick: number, scale: number): HTMLCanvasElement {
+/** 획을 굵게(thick>0), 글자를 작게(scale<1), 가로로 늘려(wide>1) 바꾼 사본 — 기계가 다른 모양으로도 읽어 보게 */
+function variant(src: HTMLCanvasElement, thick: number, scale: number, wide = 1): HTMLCanvasElement {
   const out = document.createElement('canvas');
   out.width = out.height = src.width;
   const g = out.getContext('2d')!;
   g.fillStyle = '#fff';
   g.fillRect(0, 0, out.width, out.height);
-  const w = src.width * scale;
-  const off = (src.width - w) / 2;
+  const w = src.width * scale * wide;
+  const h = src.width * scale;
+  const offX = (src.width - w) / 2;
+  const offY = (src.width - h) / 2;
   g.globalCompositeOperation = 'multiply';
   if (thick > 0) {
-    for (let dx = -thick; dx <= thick; dx++) for (let dy = -thick; dy <= thick; dy++) g.drawImage(src, off + dx, off + dy, w, w);
-  } else g.drawImage(src, off, off, w, w);
+    for (let dx = -thick; dx <= thick; dx++) for (let dy = -thick; dy <= thick; dy++) g.drawImage(src, offX + dx, offY + dy, w, h);
+  } else g.drawImage(src, offX, offY, w, h);
   return out;
 }
 
@@ -280,6 +282,7 @@ export async function judgeHandwriting(norm: HTMLCanvasElement, expected: string
     [variant(norm, 2, 1), 8],
     [variant(norm, 0, 0.7), 10],
     [variant(norm, 1, 0.8), 8],
+    [variant(norm, 0, 0.8, 1.3), 8], // 가로로 늘림: 겹모음(ㅝ·ㅘ)의 획이 붙어 보이는 것을 막는다
   ];
   for (const [img, psm] of passes) {
     const r = await readHandwriting(img, psm);
@@ -290,16 +293,28 @@ export async function judgeHandwriting(norm: HTMLCanvasElement, expected: string
   const readCh = [...read][0] ?? '';
 
   // 모양 비교: 정답 본보기와의 닮음이 헷갈리는 글자들보다 높으면 정답.
-  // 자음이 다른 글자(갑/갚)와는 거의 비슷해도 봐주지만, 모음이 다른 글자(맷/멧)보다는 분명히 정답 쪽이어야 한다
+  // 자음이 다른 글자(갑/갚)와는 거의 비슷해도 봐주지만, 모음이 다른 글자(맷/멧)보다는 정답 쪽이어야 한다
   let shapeOk = false;
+  // 기계가 읽은 글자보다 정답 본보기가 더(거의 같거나) 닮았는가
+  const beatsRead = !!drawn && !!readCh && !!scores && scores.mine >= shapeScore(drawn, readCh) - 0.02;
   if (scores) {
     shapeOk = scores.mine >= 0.45 && scores.mine >= scores.cons - 0.03 && scores.mine >= scores.vowel;
-    if (shapeOk && (!readCh || looksAlike(expected, readCh) || jamoDiff(expected, readCh).length >= 2)) {
+    // 기계가 전혀 다른 글자로 읽었을 때는 모양이 꽤 분명해야(0.6 이상) 모양만으로 뒤집는다
+    if (shapeOk && (!readCh || looksAlike(expected, readCh) || ((jamoDiff(expected, readCh).length >= 2 || beatsRead) && scores.mine >= 0.6))) {
       return { ok: true, read, how: 'shape', hint: '', scores };
     }
   }
-  // 읽힌 글자가 정답과 생김새 비슷한 자모 하나만 다르면(ㅅ↔ㅈ 받침 등) 아이 글씨로 보고 인정
-  if (readCh && looksAlike(expected, readCh) && shapeOk) return { ok: true, read, how: 'lenient', hint: '', scores };
+  if (readCh && scores && scores.mine >= 0.45) {
+    const diff1 = jamoDiff(expected, readCh);
+    // 읽힌 글자가 정답과 생김새 비슷한 자모 하나만 다르면(ㅅ↔ㅈ 받침 등) 아이 글씨로 보고 인정
+    if (looksAlike(expected, readCh) && shapeOk) return { ok: true, read, how: 'lenient', hint: '', scores };
+    // 받침·첫 자음 하나만 다르거나 겹모음의 한 획을 놓친 것으로 읽혔는데(궐→권·걸), 모양이 정답 쪽이면 기계의 실수로 본다.
+    // 헷갈리는 글자 쪽이 뚜렷이 더 닮았으면(틀리게 쓴 것) 인정하지 않는다
+    const nearMiss = diff1.length === 1 && (diff1[0] !== 'jung' || missesCompoundVowel(expected, readCh));
+    if (nearMiss && beatsRead && scores.mine >= scores.cons - 0.05 && scores.mine >= scores.vowel - 0.03) {
+      return { ok: true, read, how: 'lenient', hint: '', scores };
+    }
+  }
 
   const diff = readCh ? jamoDiff(expected, readCh) : [];
   const hint = diff.length === 1 ? JAMO_NAME[diff[0]] : '';
